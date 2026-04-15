@@ -1,0 +1,657 @@
+openapi: 3.1.0
+info:
+  title: Api
+  version: 0.1.0
+  description: StudyFlow adaptive exam preparation API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: student
+    description: Student profile operations
+  - name: topics
+    description: Topic management
+  - name: schedule
+    description: Daily schedule operations
+  - name: sessions
+    description: Study session logging
+  - name: dashboard
+    description: Dashboard summary operations
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /student/profile:
+    get:
+      operationId: getStudentProfile
+      tags: [student]
+      summary: Get the student profile and state vector
+      responses:
+        "200":
+          description: Student profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentProfile"
+        "404":
+          description: No profile exists yet
+    post:
+      operationId: createStudentProfile
+      tags: [student]
+      summary: Create or reset student profile (onboarding)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateStudentProfileBody"
+      responses:
+        "201":
+          description: Profile created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentProfile"
+    patch:
+      operationId: updateStudentProfile
+      tags: [student]
+      summary: Update student profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateStudentProfileBody"
+      responses:
+        "200":
+          description: Updated profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudentProfile"
+
+  /topics:
+    get:
+      operationId: listTopics
+      tags: [topics]
+      summary: List all topics with mastery and priority scores
+      responses:
+        "200":
+          description: Topic list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Topic"
+    post:
+      operationId: createTopic
+      tags: [topics]
+      summary: Create a new topic
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTopicBody"
+      responses:
+        "201":
+          description: Topic created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Topic"
+
+  /topics/{id}:
+    get:
+      operationId: getTopic
+      tags: [topics]
+      summary: Get a single topic
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Topic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Topic"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateTopic
+      tags: [topics]
+      summary: Update topic metadata or mastery score after a test
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTopicBody"
+      responses:
+        "200":
+          description: Updated topic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Topic"
+        "404":
+          description: Not found
+    delete:
+      operationId: deleteTopic
+      tags: [topics]
+      summary: Delete a topic
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /schedule/today:
+    get:
+      operationId: getTodaySchedule
+      tags: [schedule]
+      summary: Get today's study schedule
+      responses:
+        "200":
+          description: Today's schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailySchedule"
+    post:
+      operationId: recalculateSchedule
+      tags: [schedule]
+      summary: Trigger schedule recalculation (nightly loop)
+      responses:
+        "200":
+          description: Recalculated schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailySchedule"
+
+  /sessions:
+    get:
+      operationId: listSessions
+      tags: [sessions]
+      summary: List recent study sessions
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Sessions list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StudySession"
+    post:
+      operationId: logSession
+      tags: [sessions]
+      summary: Log a completed study session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogSessionBody"
+      responses:
+        "201":
+          description: Session logged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudySession"
+
+  /sessions/{id}:
+    get:
+      operationId: getSession
+      tags: [sessions]
+      summary: Get a single study session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StudySession"
+        "404":
+          description: Not found
+
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [dashboard]
+      summary: Get overall stats for the dashboard overview
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+
+  /dashboard/weekly-progress:
+    get:
+      operationId: getWeeklyProgress
+      tags: [dashboard]
+      summary: Get study hours per day for the last 7 days
+      responses:
+        "200":
+          description: Weekly progress
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DailyProgress"
+
+  /dashboard/priority-topics:
+    get:
+      operationId: getPriorityTopics
+      tags: [dashboard]
+      summary: Get top 5 highest-priority topics to study next
+      responses:
+        "200":
+          description: Priority topics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Topic"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    StudentProfile:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        examName:
+          type: string
+        examDate:
+          type: string
+        dailyTargetHours:
+          type: number
+        capacityScore:
+          type: number
+          description: "K: smoothed observed study hours capacity"
+        disciplineScore:
+          type: number
+          description: "D: ratio of actual to scheduled study time (0-1)"
+        activePracticeRatio:
+          type: number
+          description: "A: ratio of practice sessions to total sessions"
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - name
+        - examName
+        - examDate
+        - dailyTargetHours
+        - capacityScore
+        - disciplineScore
+        - activePracticeRatio
+        - createdAt
+        - updatedAt
+
+    CreateStudentProfileBody:
+      type: object
+      properties:
+        name:
+          type: string
+        examName:
+          type: string
+        examDate:
+          type: string
+        dailyTargetHours:
+          type: number
+      required:
+        - name
+        - examName
+        - examDate
+        - dailyTargetHours
+
+    UpdateStudentProfileBody:
+      type: object
+      properties:
+        name:
+          type: string
+        examName:
+          type: string
+        examDate:
+          type: string
+        dailyTargetHours:
+          type: number
+        capacityScore:
+          type: number
+        disciplineScore:
+          type: number
+        activePracticeRatio:
+          type: number
+
+    Topic:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        subject:
+          type: string
+        masteryScore:
+          type: number
+          description: "m_i in [0,1]: current mastery level"
+        confidenceScore:
+          type: number
+          description: "c_i in [0,1]: ratio of questions attempted vs available"
+        priorityScore:
+          type: number
+          description: "Computed priority for scheduling"
+        difficultyLevel:
+          type: integer
+          description: "1-5 scale"
+        estimatedHours:
+          type: number
+          description: "Estimated total hours to complete"
+        prerequisites:
+          type: array
+          items:
+            type: integer
+          description: "Array of topic IDs this topic depends on"
+        isCompleted:
+          type: boolean
+        testsCount:
+          type: integer
+          description: "n_t: number of tests taken for learning rate"
+        lastStudiedAt:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - name
+        - subject
+        - masteryScore
+        - confidenceScore
+        - priorityScore
+        - difficultyLevel
+        - estimatedHours
+        - prerequisites
+        - isCompleted
+        - testsCount
+        - lastStudiedAt
+        - createdAt
+        - updatedAt
+
+    CreateTopicBody:
+      type: object
+      properties:
+        name:
+          type: string
+        subject:
+          type: string
+        difficultyLevel:
+          type: integer
+        estimatedHours:
+          type: number
+        prerequisites:
+          type: array
+          items:
+            type: integer
+        masteryScore:
+          type: number
+      required:
+        - name
+        - subject
+        - difficultyLevel
+        - estimatedHours
+
+    UpdateTopicBody:
+      type: object
+      properties:
+        name:
+          type: string
+        subject:
+          type: string
+        difficultyLevel:
+          type: integer
+        estimatedHours:
+          type: number
+        prerequisites:
+          type: array
+          items:
+            type: integer
+        masteryScore:
+          type: number
+        confidenceScore:
+          type: number
+        isCompleted:
+          type: boolean
+        testScore:
+          type: number
+          description: "Raw score on a test (0-100), triggers mastery update formula"
+        testScoreMax:
+          type: number
+          description: "Maximum possible score on the test"
+
+    DailySchedule:
+      type: object
+      properties:
+        id:
+          type: integer
+        date:
+          type: string
+        scheduledHours:
+          type: number
+        blocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScheduleBlock"
+        daysUntilExam:
+          type: integer
+        isReset:
+          type: boolean
+          description: "True if a psychological reset was triggered (backlog cleared)"
+        createdAt:
+          type: string
+      required:
+        - id
+        - date
+        - scheduledHours
+        - blocks
+        - daysUntilExam
+        - isReset
+        - createdAt
+
+    ScheduleBlock:
+      type: object
+      properties:
+        topicId:
+          type: integer
+        topicName:
+          type: string
+        subject:
+          type: string
+        sessionType:
+          type: string
+          enum: [lecture, practice]
+        durationMinutes:
+          type: integer
+        priorityScore:
+          type: number
+        masteryScore:
+          type: number
+      required:
+        - topicId
+        - topicName
+        - subject
+        - sessionType
+        - durationMinutes
+        - priorityScore
+        - masteryScore
+
+    StudySession:
+      type: object
+      properties:
+        id:
+          type: integer
+        topicId:
+          type: integer
+        topicName:
+          type: string
+        sessionType:
+          type: string
+          enum: [lecture, practice]
+        durationMinutes:
+          type: integer
+        testScore:
+          type: ["number", "null"]
+        testScoreMax:
+          type: ["number", "null"]
+        notes:
+          type: ["string", "null"]
+        studiedAt:
+          type: string
+        createdAt:
+          type: string
+      required:
+        - id
+        - topicId
+        - topicName
+        - sessionType
+        - durationMinutes
+        - testScore
+        - testScoreMax
+        - notes
+        - studiedAt
+        - createdAt
+
+    LogSessionBody:
+      type: object
+      properties:
+        topicId:
+          type: integer
+        sessionType:
+          type: string
+          enum: [lecture, practice]
+        durationMinutes:
+          type: integer
+        testScore:
+          type: number
+        testScoreMax:
+          type: number
+        notes:
+          type: string
+        studiedAt:
+          type: string
+      required:
+        - topicId
+        - sessionType
+        - durationMinutes
+
+    DashboardSummary:
+      type: object
+      properties:
+        daysUntilExam:
+          type: integer
+        totalTopics:
+          type: integer
+        completedTopics:
+          type: integer
+        averageMastery:
+          type: number
+        disciplineScore:
+          type: number
+        capacityScore:
+          type: number
+        todayScheduledHours:
+          type: number
+        weeklyStudiedHours:
+          type: number
+        streakDays:
+          type: integer
+        examName:
+          type: string
+        examDate:
+          type: string
+      required:
+        - daysUntilExam
+        - totalTopics
+        - completedTopics
+        - averageMastery
+        - disciplineScore
+        - capacityScore
+        - todayScheduledHours
+        - weeklyStudiedHours
+        - streakDays
+        - examName
+        - examDate
+
+    DailyProgress:
+      type: object
+      properties:
+        date:
+          type: string
+        studiedHours:
+          type: number
+        scheduledHours:
+          type: number
+      required:
+        - date
+        - studiedHours
+        - scheduledHours
