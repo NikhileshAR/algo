@@ -12,6 +12,8 @@ const router: IRouter = Router();
 function formatSession(s: typeof studySessionsTable.$inferSelect) {
   return {
     ...s,
+    distractionMinutes: s.distractionMinutes ?? 0,
+    source: s.source ?? "manual",
     testScore: s.testScore ?? null,
     testScoreMax: s.testScoreMax ?? null,
     notes: s.notes ?? null,
@@ -67,6 +69,8 @@ router.post("/sessions", async (req, res): Promise<void> => {
       topicName: topic.name,
       sessionType: parsed.data.sessionType,
       durationMinutes: parsed.data.durationMinutes,
+      distractionMinutes: parsed.data.distractionMinutes ?? 0,
+      source: parsed.data.source ?? "manual",
       testScore: parsed.data.testScore ?? null,
       testScoreMax: parsed.data.testScoreMax ?? null,
       notes: parsed.data.notes ?? null,

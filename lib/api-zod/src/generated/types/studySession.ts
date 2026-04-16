@@ -14,6 +14,10 @@ export interface StudySession {
   sessionType: StudySessionSessionType;
   durationMinutes: number;
   /** @nullable */
+  distractionMinutes: number | null;
+  /** @nullable */
+  source: string | null;
+  /** @nullable */
   testScore: number | null;
   /** @nullable */
   testScoreMax: number | null;

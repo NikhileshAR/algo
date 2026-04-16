@@ -559,6 +559,11 @@ components:
           enum: [lecture, practice]
         durationMinutes:
           type: integer
+        distractionMinutes:
+          type: ["integer", "null"]
+        source:
+          type: ["string", "null"]
+          enum: [manual, extension, "null"]
         testScore:
           type: ["number", "null"]
         testScoreMax:
@@ -575,6 +580,8 @@ components:
         - topicName
         - sessionType
         - durationMinutes
+        - distractionMinutes
+        - source
         - testScore
         - testScoreMax
         - notes
@@ -591,6 +598,11 @@ components:
           enum: [lecture, practice]
         durationMinutes:
           type: integer
+        distractionMinutes:
+          type: integer
+        source:
+          type: string
+          enum: [manual, extension]
         testScore:
           type: number
         testScoreMax:

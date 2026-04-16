@@ -11,6 +11,8 @@ export interface LogSessionBody {
   topicId: number;
   sessionType: LogSessionBodySessionType;
   durationMinutes: number;
+  distractionMinutes?: number;
+  source?: string;
   testScore?: number;
   testScoreMax?: number;
   notes?: string;

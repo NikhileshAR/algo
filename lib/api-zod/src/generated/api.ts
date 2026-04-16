@@ -283,6 +283,8 @@ export const LogSessionBody = zod.object({
   topicId: zod.number(),
   sessionType: zod.enum(["lecture", "practice"]),
   durationMinutes: zod.number(),
+  distractionMinutes: zod.number().optional(),
+  source: zod.enum(["manual", "extension"]).optional(),
   testScore: zod.number().optional(),
   testScoreMax: zod.number().optional(),
   notes: zod.string().optional(),

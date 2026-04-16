@@ -8,6 +8,8 @@ export const studySessionsTable = pgTable("study_sessions", {
   topicName: text("topic_name").notNull(),
   sessionType: text("session_type").notNull().default("lecture"),
   durationMinutes: integer("duration_minutes").notNull(),
+  distractionMinutes: integer("distraction_minutes").default(0),
+  source: text("source").default("manual"),
   testScore: real("test_score"),
   testScoreMax: real("test_score_max"),
   notes: text("notes"),

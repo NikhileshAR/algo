@@ -334,8 +334,7 @@ export default function Schedule() {
                         <div className="flex flex-col gap-2 shrink-0">
                           {isThisActive ? (
                             <Button
-                              size="sm"
-                              className="bg-primary text-primary-foreground"
+                              className="min-h-[44px] bg-primary text-primary-foreground px-3 text-sm"
                               onClick={() => stopTimer({ topicId: block.topicId, topicName: block.topicName, durationMinutes: block.durationMinutes, sessionType: block.sessionType })}
                               data-testid={`button-stop-${i}`}
                             >
@@ -344,8 +343,8 @@ export default function Schedule() {
                             </Button>
                           ) : (
                             <Button
-                              size="sm"
                               variant="outline"
+                              className="min-h-[44px] px-3 text-sm"
                               onClick={() => startTimer({ topicId: block.topicId, topicName: block.topicName, sessionType: block.sessionType }, i)}
                               disabled={hasOtherActive}
                               data-testid={`button-start-${i}`}
@@ -356,9 +355,8 @@ export default function Schedule() {
                           )}
                           {!isThisActive && (
                             <Button
-                              size="sm"
                               variant="ghost"
-                              className="text-xs text-muted-foreground"
+                              className="min-h-[44px] px-3 text-xs text-muted-foreground"
                               onClick={() => openLog({ topicId: block.topicId, topicName: block.topicName, durationMinutes: block.durationMinutes, sessionType: block.sessionType })}
                               data-testid={`button-log-block-${i}`}
                             >
