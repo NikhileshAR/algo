@@ -299,7 +299,7 @@ export default function Dashboard() {
               <div key={topic.topic} className="flex items-center justify-between text-sm">
                 <span className="font-medium">{topic.topic}</span>
                 <div className="text-xs text-muted-foreground">
-                  {topic.focusedMinutes.toFixed(0)}m focused · {Math.round(topic.focusRatio * 100)}% focus · Q{Math.round(topic.qualityScore * 100)}
+                  {topic.focusedMinutes.toFixed(0)}m focused · {Math.round(topic.focusRatio * 100)}% focus · Quality {Math.round(topic.qualityScore * 100)}
                 </div>
               </div>
             ))}

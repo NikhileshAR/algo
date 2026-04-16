@@ -1,5 +1,5 @@
 import { getTelemetryRepo } from "./repositories";
-import type { SchedulerTelemetryInput, TelemetryEvent } from "./schema";
+import { MANUAL_EVENT_WEIGHT, type SchedulerTelemetryInput, type TelemetryEvent } from "./schema";
 
 function normalizeIncomingEvent(raw: Record<string, unknown>): Omit<TelemetryEvent, "id"> {
   return {
@@ -66,6 +66,6 @@ export async function recordManualTelemetryEvent(event: {
     videoWatchedMs: 0,
     videoTotalMs: 0,
     source: "manual",
-    weight: 0.5,
+    weight: MANUAL_EVENT_WEIGHT,
   });
 }

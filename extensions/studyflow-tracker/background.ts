@@ -29,8 +29,8 @@ interface TelemetryEvent {
   interactionCount: number;
   videoWatchedMs: number;
   videoTotalMs: number;
-  source: "auto";
-  weight: 1;
+  source: "auto" | "manual";
+  weight: number;
 }
 
 const EMIT_INTERVAL_MS = 10_000;
@@ -91,7 +91,13 @@ async function emitTelemetry(): Promise<void> {
   }
 
   const pageClassification = classifyPage(currentSession.url, currentSession.title);
-  const isYouTube = currentSession.url.includes("youtube.com") || currentSession.url.includes("youtu.be");
+  let isYouTube = false;
+  try {
+    const host = new URL(currentSession.url).hostname.toLowerCase();
+    isYouTube = host === "youtube.com" || host.endsWith(".youtube.com") || host === "youtu.be";
+  } catch {
+    isYouTube = false;
+  }
 
   const classification = isYouTube
     ? classifyYouTubePage({ title: currentSession.title, channelName: currentSession.videoChannelName })
@@ -133,7 +139,7 @@ function activateTab(tabId: number): void {
       return;
     }
 
-    const switches = (currentSession?.switches ?? 0) + (currentSession ? 1 : 0);
+    const switches = currentSession ? currentSession.switches + 1 : 0;
     currentSession = createSession(tab, switches);
   });
 }

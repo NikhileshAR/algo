@@ -187,7 +187,7 @@ export default function Schedule() {
     const masteryBefore = topic?.masteryScore;
 
     logSession.mutate(
-      { data: { topicId: data.topicId, sessionType: data.sessionType, durationMinutes: data.durationMinutes, testScore: data.testScore, testScoreMax: data.testScoreMax, notes: data.notes, source: "manual" } },
+      { data: { topicId: data.topicId, sessionType: data.sessionType, durationMinutes: data.durationMinutes, testScore: data.testScore, testScoreMax: data.testScoreMax, notes: data.notes } },
       {
         onSuccess: () => {
           let description = masteryBefore !== undefined

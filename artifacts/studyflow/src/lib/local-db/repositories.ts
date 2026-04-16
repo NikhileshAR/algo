@@ -1,5 +1,14 @@
 import { getTelemetryEventsInRange, putTelemetryEvent } from "./idb";
-import type { SchedulerTelemetryInput, TelemetryDaySummary, TelemetryEvent, TopicDaySummary } from "./schema";
+import { MANUAL_EVENT_WEIGHT, type SchedulerTelemetryInput, type TelemetryDaySummary, type TelemetryEvent, type TopicDaySummary } from "./schema";
+
+// A gap above 2 minutes is treated as a new focus segment for fragmentation scoring.
+const FRAGMENTATION_THRESHOLD_MS = 2 * 60 * 1000;
+const LOW_INTERACTION_PER_MINUTE = 0.2;
+const HIGH_TAB_SWITCH_PENALTY = 0.6;
+const HIGH_FRAGMENTATION = 0.5;
+const LOW_INTERACTION_QUALITY_PENALTY = 0.8;
+const HIGH_SWITCH_QUALITY_PENALTY = 0.85;
+const HIGH_FRAGMENTATION_QUALITY_PENALTY = 0.85;
 
 function clamp(value: number, min = 0, max = 1): number {
   return Math.max(min, Math.min(max, value));
@@ -12,6 +21,7 @@ function toDayWindow(date: string): { startIso: string; endIso: string } {
 }
 
 function normalizeEvent(input: Omit<TelemetryEvent, "id"> & { id?: string }): TelemetryEvent {
+  const autoWeight = Number.isFinite(input.weight) && input.weight > 0 ? input.weight : 1;
   return {
     id: input.id ?? `evt-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     timestamp: input.timestamp,
@@ -26,7 +36,7 @@ function normalizeEvent(input: Omit<TelemetryEvent, "id"> & { id?: string }): Te
     videoWatchedMs: Math.max(0, input.videoWatchedMs),
     videoTotalMs: Math.max(0, input.videoTotalMs),
     source: input.source,
-    weight: input.source === "manual" ? 0.5 : input.weight,
+    weight: input.source === "manual" ? MANUAL_EVENT_WEIGHT : autoWeight,
   };
 }
 
@@ -48,7 +58,7 @@ function summarizeTopic(topic: string, events: TelemetryEvent[]): TopicDaySummar
     if (!Number.isFinite(ts)) {
       continue;
     }
-    if (prevTs === null || ts - prevTs > 120000) {
+    if (prevTs === null || ts - prevTs > FRAGMENTATION_THRESHOLD_MS) {
       segments += 1;
     }
     prevTs = ts;
@@ -69,14 +79,14 @@ function summarizeTopic(topic: string, events: TelemetryEvent[]): TopicDaySummar
     (1 - tabSwitchPenalty) * 0.1 +
     videoEngagementRatio * 0.1;
 
-  if (interactionPerMinute < 0.2) {
-    qualityScore *= 0.8;
+  if (interactionPerMinute < LOW_INTERACTION_PER_MINUTE) {
+    qualityScore *= LOW_INTERACTION_QUALITY_PENALTY;
   }
-  if (tabSwitchPenalty > 0.6) {
-    qualityScore *= 0.85;
+  if (tabSwitchPenalty > HIGH_TAB_SWITCH_PENALTY) {
+    qualityScore *= HIGH_SWITCH_QUALITY_PENALTY;
   }
-  if (fragmentation > 0.5) {
-    qualityScore *= 0.85;
+  if (fragmentation > HIGH_FRAGMENTATION) {
+    qualityScore *= HIGH_FRAGMENTATION_QUALITY_PENALTY;
   }
 
   return {

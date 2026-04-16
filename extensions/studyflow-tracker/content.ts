@@ -5,11 +5,15 @@ interface YouTubeTelemetry {
   totalMs: number;
 }
 
+const EMIT_INTERVAL_MS = 10_000;
+
 let interactionCount = 0;
 let lastVideoTime = 0;
 let watchedMs = 0;
 let totalMs = 0;
 let lastEmitAt = Date.now();
+let emitIntervalId: number | null = null;
+const cleanupCallbacks: Array<() => void> = [];
 
 function postToBackground(payload: Record<string, unknown>): void {
   if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
@@ -25,7 +29,9 @@ function postToWindow(payload: Record<string, unknown>): void {
 }
 
 function detectYouTubeMeta(): YouTubeTelemetry | null {
-  if (!location.hostname.includes("youtube.com")) {
+  const host = location.hostname.toLowerCase();
+  const isYouTubeHost = host === "youtube.com" || host.endsWith(".youtube.com");
+  if (!isYouTubeHost) {
     return null;
   }
 
@@ -97,11 +103,19 @@ function setupInteractionTracking(): void {
 
   ["click", "keydown", "scroll", "mousemove"].forEach((eventName) => {
     window.addEventListener(eventName, bump, { passive: true });
+    cleanupCallbacks.push(() => window.removeEventListener(eventName, bump));
   });
 
-  setInterval(() => {
+  emitIntervalId = window.setInterval(() => {
     emitInteraction();
-  }, 10000);
+  }, EMIT_INTERVAL_MS);
+
+  window.addEventListener("beforeunload", () => {
+    if (emitIntervalId !== null) {
+      window.clearInterval(emitIntervalId);
+    }
+    cleanupCallbacks.forEach((cleanup) => cleanup());
+  }, { once: true });
 }
 
 setupInteractionTracking();

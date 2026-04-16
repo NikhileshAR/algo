@@ -94,8 +94,9 @@ export function classifyYouTubePage(meta: YouTubeMetadata): PageClassification {
 export function classifyPage(url: string, title: string): PageClassification {
   const host = safeHost(url);
   const text = `${url} ${title}`;
+  const isYouTubeHost = host === "youtube.com" || host.endsWith(".youtube.com") || host === "youtu.be";
 
-  if (host.includes("youtube.com") || host.includes("youtu.be")) {
+  if (isYouTubeHost) {
     return {
       isStudy: false,
       topic: topicFromText(text).topic,

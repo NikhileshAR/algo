@@ -1,4 +1,6 @@
 export type TelemetrySource = "auto" | "manual";
+// Manual logs are downweighted so passive/auto telemetry remains the primary behavioral signal.
+export const MANUAL_EVENT_WEIGHT = 0.5;
 
 export interface TelemetryEvent {
   id: string;
