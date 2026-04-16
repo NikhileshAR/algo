@@ -62,6 +62,11 @@ export function applySessionToMastery(
 ): TopicMasteryState {
   const n = current.practiceCount + 1;
   // Learning rate decreases as practice count grows (1/n style)
+  /**
+   * 1/n learning rate schedule: converges quickly at first (n small) and
+   * slows down as more practice accumulates. Clamped at 0.05 so mastery
+   * never becomes completely frozen for well-practised topics.
+   */
   const alpha = Math.max(0.05, 1 / n);
   // Minutes studied above 20 provide diminishing returns
   const effortBonus = Math.min(1, signal.focusedMinutes / 20) * 0.1;

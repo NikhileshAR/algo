@@ -237,6 +237,9 @@ export function computeAdaptivePlan(
     }
   }
 
+  // Re-sort after potential reorder from diversity replacement so plan is urgency-desc.
+  candidates.sort((a, b) => b.urgency - a.urgency);
+
   const selected = candidates;
 
   return selected.map((t) => {

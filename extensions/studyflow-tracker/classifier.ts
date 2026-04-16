@@ -13,7 +13,8 @@ const KNOWN_STUDY_DOMAINS = [
   "khanacademy.org",
   "coursera.org",
   "ncert.nic.in",
-  "physicswallah",
+  "physicswallah.live",
+  "pw.live",
 ];
 
 const YOUTUBE_STUDY_CHANNELS = new Set([
