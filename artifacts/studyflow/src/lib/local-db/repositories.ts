@@ -50,7 +50,7 @@ function summarizeTopic(topic: string, events: TelemetryEvent[]): TopicDaySummar
   const interactionPerMinute = focusedMinutes > 0 ? interactionCount / focusedMinutes : 0;
   const interactionDensity = clamp(interactionPerMinute / 3);
 
-  const sorted = [...events].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  const sorted = [...events].sort((a, b) => (a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0));
   let segments = 0;
   let prevTs: number | null = null;
   for (const event of sorted) {

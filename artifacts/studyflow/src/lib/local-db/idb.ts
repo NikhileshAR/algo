@@ -1,8 +1,9 @@
 import type { TelemetryEvent } from "./schema";
 
 const DB_NAME = "studyflow-local";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const TELEMETRY_STORE = "telemetry_events";
+const MASTERY_STORE = "topic_mastery_states";
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -15,6 +16,9 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(TELEMETRY_STORE)) {
         const store = db.createObjectStore(TELEMETRY_STORE, { keyPath: "id" });
         store.createIndex("timestamp", "timestamp", { unique: false });
+      }
+      if (!db.objectStoreNames.contains(MASTERY_STORE)) {
+        db.createObjectStore(MASTERY_STORE, { keyPath: "topicId" });
       }
     };
 

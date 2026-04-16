@@ -41,6 +41,7 @@ import * as z from "zod";
 import { useToast } from "@/hooks/use-toast";
 import { RefreshCw, Clock, CheckCircle2, BookOpen, Target, Info, Play, Square } from "lucide-react";
 import { recordManualTelemetryEvent, syncSchedulerTelemetryInput } from "@/lib/local-db/bridge";
+import { runFeedbackLoop } from "@/lib/feedback-loop";
 
 const logSessionSchema = z.object({
   topicId: z.coerce.number().min(1, "Select a topic"),
@@ -221,6 +222,13 @@ export default function Schedule() {
               topic: topicName,
               durationMinutes: data.durationMinutes,
               title: data.notes || undefined,
+            });
+            // Phase 4: update local mastery state via feedback loop
+            void runFeedbackLoop({
+              topicId: String(data.topicId),
+              topicName,
+              serverMastery: topic?.masteryScore ?? 0.1,
+              focusedMinutes: data.durationMinutes,
             });
           }
         },
