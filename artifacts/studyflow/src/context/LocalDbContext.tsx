@@ -58,7 +58,7 @@ import type {
 
 // ─── Context value type ───────────────────────────────────────────────────────
 
-interface LocalDbContextValue {
+export interface LocalDbContextValue {
   // ── Initialization ──────────────────────────────────────────────────────
   ready: boolean;
   initError: string | null;
