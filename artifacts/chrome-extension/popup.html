@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StudyFlow</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="header">
+    <div class="logo">
+      <div class="logo-icon">S</div>
+      <span class="logo-name">StudyFlow</span>
+    </div>
+    <a href="#" id="options-link" class="settings-btn" title="Settings">⚙</a>
+  </div>
+
+  <div id="no-config" class="empty-state" style="display:none">
+    <p class="empty-icon">🔗</p>
+    <p class="empty-title">Not connected</p>
+    <p class="empty-desc">Open Settings to enter your StudyFlow API URL.</p>
+    <button id="open-options" class="btn btn-primary">Open Settings</button>
+  </div>
+
+  <div id="main" style="display:none">
+
+    <div id="manual-session-banner" class="session-banner" style="display:none">
+      <div class="session-info">
+        <div class="pulse-dot"></div>
+        <div>
+          <div class="session-name" id="banner-topic-name">—</div>
+          <div class="session-type" id="banner-session-type">lecture session</div>
+        </div>
+      </div>
+      <div class="session-timer" id="banner-timer">00:00</div>
+    </div>
+
+    <div id="auto-tracking-banner" class="tracking-banner" style="display:none">
+      <span class="tracking-dot"></span>
+      <span id="tracking-topic-name">—</span>
+      <span class="tracking-label">auto-tracked</span>
+    </div>
+
+    <div class="section-title">Today's Schedule</div>
+    <div id="schedule-list">
+      <div class="loading">Loading schedule…</div>
+    </div>
+
+    <div id="recent-logs-section" style="display:none">
+      <div class="section-title" style="margin-top:12px">Recently auto-logged</div>
+      <div id="recent-logs-list"></div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import {
   useGetTodaySchedule,
   useRecalculateSchedule,
@@ -8,6 +8,7 @@ import {
   getListSessionsQueryKey,
   getGetDashboardSummaryQueryKey,
   getGetPriorityTopicsQueryKey,
+  getListTopicsQueryKey,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -38,7 +39,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { useToast } from "@/hooks/use-toast";
-import { RefreshCw, Clock, CheckCircle2, BookOpen, Target } from "lucide-react";
+import { RefreshCw, Clock, CheckCircle2, BookOpen, Target, Info, Play, Square } from "lucide-react";
 
 const logSessionSchema = z.object({
   topicId: z.coerce.number().min(1, "Select a topic"),
@@ -49,11 +50,68 @@ const logSessionSchema = z.object({
   notes: z.string().optional(),
 });
 
+interface ActiveTimer {
+  blockIndex: number;
+  topicId: number;
+  topicName: string;
+  sessionType: "lecture" | "practice";
+  startedAt: number;
+}
+
+function formatElapsed(seconds: number): string {
+  const m = Math.floor(seconds / 60).toString().padStart(2, "0");
+  const s = (seconds % 60).toString().padStart(2, "0");
+  return `${m}:${s}`;
+}
+
+function getSessionHint(
+  mastery: number,
+  sessionType: "lecture" | "practice",
+  daysSinceStudied: number | null,
+): string {
+  const parts: string[] = [];
+
+  if (daysSinceStudied !== null && daysSinceStudied >= 14) {
+    parts.push(`Last studied ${daysSinceStudied} days ago — start with a 5-minute recap.`);
+  } else if (daysSinceStudied !== null && daysSinceStudied >= 7) {
+    parts.push(`You haven't reviewed this in ${daysSinceStudied} days — warm up before diving in.`);
+  }
+
+  if (sessionType === "practice") {
+    if (mastery < 0.4) {
+      parts.push("Mastery is low — try worked examples before unseen problems.");
+    } else if (mastery < 0.7) {
+      parts.push("Run timed problems and review every mistake carefully.");
+    } else {
+      parts.push("Strong mastery — push for speed and tackle the hardest variants.");
+    }
+  } else {
+    if (mastery < 0.3) {
+      parts.push("Foundation phase — go slow, build mental models, take structured notes.");
+    } else if (mastery < 0.6) {
+      parts.push("Consolidation phase — connect concepts, look for gaps in understanding.");
+    } else {
+      parts.push("Advanced review — focus on edge cases and things you're least confident about.");
+    }
+  }
+
+  return parts.join(" ");
+}
+
 export default function Schedule() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [logOpen, setLogOpen] = useState(false);
-  const [selectedBlock, setSelectedBlock] = useState<{ topicId: number; topicName: string; durationMinutes: number; sessionType: "lecture" | "practice" } | null>(null);
+  const [selectedBlock, setSelectedBlock] = useState<{
+    topicId: number;
+    topicName: string;
+    durationMinutes: number;
+    sessionType: "lecture" | "practice";
+  } | null>(null);
+
+  const [activeTimer, setActiveTimer] = useState<ActiveTimer | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { data: schedule, isLoading } = useGetTodaySchedule();
   const { data: topics } = useListTopics();
@@ -62,22 +120,46 @@ export default function Schedule() {
 
   const form = useForm<z.infer<typeof logSessionSchema>>({
     resolver: zodResolver(logSessionSchema),
-    defaultValues: {
-      sessionType: "lecture",
-      durationMinutes: 60,
-    },
+    defaultValues: { sessionType: "lecture", durationMinutes: 60 },
   });
 
   const sessionType = form.watch("sessionType");
 
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, []);
+
+  const topicMap = new Map((topics ?? []).map((t) => [t.id, t]));
+
+  function getDaysSinceStudied(topicId: number): number | null {
+    const topic = topicMap.get(topicId);
+    if (!topic?.lastStudiedAt) return null;
+    const diff = Date.now() - new Date(topic.lastStudiedAt).getTime();
+    return Math.floor(diff / (1000 * 60 * 60 * 24));
+  }
+
+  function startTimer(block: { topicId: number; topicName: string; sessionType: "lecture" | "practice" }, idx: number) {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    setElapsed(0);
+    setActiveTimer({ blockIndex: idx, topicId: block.topicId, topicName: block.topicName, sessionType: block.sessionType, startedAt: Date.now() });
+    intervalRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
+  }
+
+  function stopTimer(block: { topicId: number; topicName: string; durationMinutes: number; sessionType: "lecture" | "practice" }) {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = null;
+    const actualMinutes = Math.max(1, Math.ceil(elapsed / 60));
+    setActiveTimer(null);
+    setElapsed(0);
+    openLog({ ...block, durationMinutes: actualMinutes });
+  }
+
   function openLog(block?: { topicId: number; topicName: string; durationMinutes: number; sessionType: "lecture" | "practice" }) {
     if (block) {
       setSelectedBlock(block);
-      form.reset({
-        topicId: block.topicId,
-        sessionType: block.sessionType,
-        durationMinutes: block.durationMinutes,
-      });
+      form.reset({ topicId: block.topicId, sessionType: block.sessionType, durationMinutes: block.durationMinutes });
     } else {
       setSelectedBlock(null);
       form.reset({ sessionType: "lecture", durationMinutes: 60 });
@@ -96,26 +178,40 @@ export default function Schedule() {
   }
 
   function onSubmit(data: z.infer<typeof logSessionSchema>) {
+    const topic = topicMap.get(data.topicId);
+    const topicName = selectedBlock?.topicName ?? topic?.name ?? "topic";
+    const masteryBefore = topic?.masteryScore;
+
     logSession.mutate(
-      {
-        data: {
-          topicId: data.topicId,
-          sessionType: data.sessionType,
-          durationMinutes: data.durationMinutes,
-          testScore: data.testScore,
-          testScoreMax: data.testScoreMax,
-          notes: data.notes,
-        },
-      },
+      { data: { topicId: data.topicId, sessionType: data.sessionType, durationMinutes: data.durationMinutes, testScore: data.testScore, testScoreMax: data.testScoreMax, notes: data.notes } },
       {
         onSuccess: () => {
-          toast({ title: "Session logged", description: "Mastery and capacity updated." });
+          let description = masteryBefore !== undefined
+            ? `Mastery was ${Math.round(masteryBefore * 100)}% — the algorithm is updating it now.`
+            : "Mastery and capacity scores updated.";
+
+          if (
+            data.sessionType === "practice" &&
+            data.testScore !== undefined &&
+            data.testScoreMax !== undefined &&
+            masteryBefore !== undefined &&
+            topic
+          ) {
+            const nt = topic.testsCount + 1;
+            const alpha = 1 / nt;
+            const normalized = data.testScore / Math.max(data.testScoreMax, 1);
+            const newMastery = Math.min(1, Math.max(0, masteryBefore + alpha * (normalized - masteryBefore)));
+            description = `Mastery: ${Math.round(masteryBefore * 100)}% → ${Math.round(newMastery * 100)}%`;
+          }
+
+          toast({ title: `Session logged · ${topicName}`, description });
           setLogOpen(false);
           form.reset();
           queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() });
           queryClient.invalidateQueries({ queryKey: getListSessionsQueryKey() });
           queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
           queryClient.invalidateQueries({ queryKey: getGetPriorityTopicsQueryKey() });
+          queryClient.invalidateQueries({ queryKey: getListTopicsQueryKey() });
         },
         onError: () => {
           toast({ title: "Error", description: "Failed to log session.", variant: "destructive" });
@@ -124,11 +220,7 @@ export default function Schedule() {
     );
   }
 
-  const today = new Date().toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  });
+  const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
   return (
     <div className="space-y-6" data-testid="schedule-page">
@@ -142,52 +234,48 @@ export default function Schedule() {
             <CheckCircle2 className="h-4 w-4 mr-2" />
             Log Session
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRecalculate}
-            disabled={recalculate.isPending}
-            data-testid="button-recalculate"
-          >
+          <Button variant="outline" size="sm" onClick={handleRecalculate} disabled={recalculate.isPending} data-testid="button-recalculate">
             <RefreshCw className={`h-4 w-4 mr-2 ${recalculate.isPending ? "animate-spin" : ""}`} />
             Recalculate
           </Button>
         </div>
       </div>
 
-      {isLoading ? (
-        <div className="space-y-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-24" />
-          ))}
+      {activeTimer && (
+        <div className="rounded-lg border-2 border-primary bg-primary/5 px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
+            <div>
+              <p className="text-sm font-semibold">Studying: {activeTimer.topicName}</p>
+              <p className="text-xs text-muted-foreground">{activeTimer.sessionType} session in progress</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="font-mono text-xl font-bold text-primary tabular-nums">{formatElapsed(elapsed)}</span>
+          </div>
         </div>
+      )}
+
+      {isLoading ? (
+        <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-24" />)}</div>
       ) : schedule ? (
         <>
           <div className="grid gap-4 md:grid-cols-3">
             <Card>
               <CardContent className="pt-4">
-                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
-                  <Clock className="h-4 w-4" />
-                  Scheduled today
-                </div>
+                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><Clock className="h-4 w-4" />Scheduled today</div>
                 <p className="text-2xl font-bold">{schedule.scheduledHours.toFixed(1)}h</p>
               </CardContent>
             </Card>
             <Card>
               <CardContent className="pt-4">
-                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
-                  <BookOpen className="h-4 w-4" />
-                  Study blocks
-                </div>
+                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><BookOpen className="h-4 w-4" />Study blocks</div>
                 <p className="text-2xl font-bold">{schedule.blocks.length}</p>
               </CardContent>
             </Card>
             <Card>
               <CardContent className="pt-4">
-                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
-                  <Target className="h-4 w-4" />
-                  Days until exam
-                </div>
+                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><Target className="h-4 w-4" />Days until exam</div>
                 <p className="text-2xl font-bold">{schedule.daysUntilExam}</p>
               </CardContent>
             </Card>
@@ -195,7 +283,7 @@ export default function Schedule() {
 
           {schedule.isReset && (
             <div className="rounded-lg border bg-accent/50 px-4 py-3 text-sm text-accent-foreground">
-              Psychological reset applied — the backlog has been cleared and the schedule rebuilt from your current position.
+              Psychological reset applied — backlog cleared and schedule rebuilt from current position.
             </div>
           )}
 
@@ -209,44 +297,81 @@ export default function Schedule() {
                 </CardContent>
               </Card>
             ) : (
-              schedule.blocks.map((block, i) => (
-                <Card key={i} className="transition-all hover:shadow-md" data-testid={`block-${i}`}>
-                  <CardContent className="pt-4">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1 flex-wrap">
-                          <h3 className="font-semibold">{block.topicName}</h3>
-                          <Badge variant="outline" className="text-xs">{block.subject}</Badge>
-                          <Badge variant={block.sessionType === "practice" ? "default" : "secondary"} className="text-xs">
-                            {block.sessionType}
-                          </Badge>
-                        </div>
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                            <span className="flex items-center gap-1">
-                              <Clock className="h-3 w-3" />
-                              {block.durationMinutes}m
-                            </span>
-                            <span>Mastery: {Math.round(block.masteryScore * 100)}%</span>
-                            <span>Priority: {block.priorityScore.toFixed(2)}</span>
+              schedule.blocks.map((block, i) => {
+                const daysSince = getDaysSinceStudied(block.topicId);
+                const hint = getSessionHint(block.masteryScore, block.sessionType, daysSince);
+                const isThisActive = activeTimer?.blockIndex === i;
+                const hasOtherActive = activeTimer !== null && !isThisActive;
+
+                return (
+                  <Card key={i} className={`transition-all hover:shadow-md ${isThisActive ? "ring-2 ring-primary" : ""}`} data-testid={`block-${i}`}>
+                    <CardContent className="pt-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            <h3 className="font-semibold">{block.topicName}</h3>
+                            <Badge variant="outline" className="text-xs">{block.subject}</Badge>
+                            <Badge variant={block.sessionType === "practice" ? "default" : "secondary"} className="text-xs">{block.sessionType}</Badge>
                           </div>
-                          <Progress value={block.masteryScore * 100} className="h-1.5" />
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                              <span className="flex items-center gap-1">
+                                <Clock className="h-3 w-3" />
+                                {isThisActive ? `${formatElapsed(elapsed)} elapsed` : `${block.durationMinutes}m`}
+                              </span>
+                              <span>Mastery: {Math.round(block.masteryScore * 100)}%</span>
+                              {daysSince !== null && daysSince > 0 && (
+                                <span className="text-xs">Last studied {daysSince}d ago</span>
+                              )}
+                            </div>
+                            <Progress value={block.masteryScore * 100} className="h-1.5" />
+                            <div className="flex items-start gap-1.5 text-xs text-muted-foreground bg-muted/40 rounded-md px-2.5 py-2">
+                              <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                              <span className="italic">{hint}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-2 shrink-0">
+                          {isThisActive ? (
+                            <Button
+                              size="sm"
+                              className="bg-primary text-primary-foreground"
+                              onClick={() => stopTimer({ topicId: block.topicId, topicName: block.topicName, durationMinutes: block.durationMinutes, sessionType: block.sessionType })}
+                              data-testid={`button-stop-${i}`}
+                            >
+                              <Square className="h-3.5 w-3.5 mr-1 fill-current" />
+                              Stop & Log
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => startTimer({ topicId: block.topicId, topicName: block.topicName, sessionType: block.sessionType }, i)}
+                              disabled={hasOtherActive}
+                              data-testid={`button-start-${i}`}
+                            >
+                              <Play className="h-3.5 w-3.5 mr-1 fill-current" />
+                              Start
+                            </Button>
+                          )}
+                          {!isThisActive && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-xs text-muted-foreground"
+                              onClick={() => openLog({ topicId: block.topicId, topicName: block.topicName, durationMinutes: block.durationMinutes, sessionType: block.sessionType })}
+                              data-testid={`button-log-block-${i}`}
+                            >
+                              <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                              Log manually
+                            </Button>
+                          )}
                         </div>
                       </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="shrink-0"
-                        onClick={() => openLog({ topicId: block.topicId, topicName: block.topicName, durationMinutes: block.durationMinutes, sessionType: block.sessionType })}
-                        data-testid={`button-log-block-${i}`}
-                      >
-                        <CheckCircle2 className="h-4 w-4 mr-1" />
-                        Done
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))
+                    </CardContent>
+                  </Card>
+                );
+              })
             )}
           </div>
         </>
@@ -255,7 +380,7 @@ export default function Schedule() {
       <Dialog open={logOpen} onOpenChange={setLogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Log Study Session</DialogTitle>
+            <DialogTitle>{selectedBlock ? `Log: ${selectedBlock.topicName}` : "Log Study Session"}</DialogTitle>
             <DialogDescription>
               Recording your session updates mastery scores and recalibrates your schedule.
             </DialogDescription>
@@ -268,21 +393,12 @@ export default function Schedule() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Topic</FormLabel>
-                    <Select
-                      onValueChange={(v) => field.onChange(Number(v))}
-                      value={field.value ? String(field.value) : ""}
-                    >
+                    <Select onValueChange={(v) => field.onChange(Number(v))} value={field.value ? String(field.value) : ""}>
                       <FormControl>
-                        <SelectTrigger data-testid="select-topic">
-                          <SelectValue placeholder="Select topic" />
-                        </SelectTrigger>
+                        <SelectTrigger data-testid="select-topic"><SelectValue placeholder="Select topic" /></SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        {topics?.map((t) => (
-                          <SelectItem key={t.id} value={String(t.id)}>
-                            {t.name} — {t.subject}
-                          </SelectItem>
-                        ))}
+                        {topics?.map((t) => <SelectItem key={t.id} value={String(t.id)}>{t.name} — {t.subject}</SelectItem>)}
                       </SelectContent>
                     </Select>
                     <FormMessage />
@@ -298,9 +414,7 @@ export default function Schedule() {
                       <FormLabel>Session Type</FormLabel>
                       <Select onValueChange={field.onChange} value={field.value}>
                         <FormControl>
-                          <SelectTrigger data-testid="select-session-type">
-                            <SelectValue />
-                          </SelectTrigger>
+                          <SelectTrigger data-testid="select-session-type"><SelectValue /></SelectTrigger>
                         </FormControl>
                         <SelectContent>
                           <SelectItem value="lecture">Lecture</SelectItem>
@@ -333,9 +447,7 @@ export default function Schedule() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Test Score</FormLabel>
-                        <FormControl>
-                          <Input type="number" min="0" max="100" placeholder="72" data-testid="input-test-score" {...field} />
-                        </FormControl>
+                        <FormControl><Input type="number" min="0" max="100" placeholder="72" data-testid="input-test-score" {...field} /></FormControl>
                         <FormDescription>Your raw score</FormDescription>
                         <FormMessage />
                       </FormItem>
@@ -347,9 +459,7 @@ export default function Schedule() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Max Score</FormLabel>
-                        <FormControl>
-                          <Input type="number" min="1" placeholder="100" data-testid="input-test-score-max" {...field} />
-                        </FormControl>
+                        <FormControl><Input type="number" min="1" placeholder="100" data-testid="input-test-score-max" {...field} /></FormControl>
                         <FormDescription>Total possible</FormDescription>
                         <FormMessage />
                       </FormItem>
@@ -363,9 +473,7 @@ export default function Schedule() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Notes (optional)</FormLabel>
-                    <FormControl>
-                      <Textarea placeholder="What did you cover? Any blockers?" data-testid="textarea-notes" {...field} />
-                    </FormControl>
+                    <FormControl><Textarea placeholder="What did you cover? Any blockers?" data-testid="textarea-notes" {...field} /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )}

@@ -1,0 +1,303 @@
+
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--font-sans); }
+.section-label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+  padding: 1.5rem 0 0.5rem;
+  border-top: 0.5px solid var(--color-border-tertiary);
+  margin-top: 1rem;
+}
+.section-label:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+.problem {
+  border: 0.5px solid var(--color-border-tertiary);
+  border-radius: var(--border-radius-lg);
+  padding: 1rem 1.25rem;
+  background: var(--color-background-primary);
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.problem:hover { border-color: var(--color-border-secondary); }
+.problem-top { display: flex; align-items: flex-start; gap: 10px; }
+.num {
+  font-size: 11px;
+  font-weight: 500;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.cat-vision  { background: var(--color-background-danger);  color: var(--color-text-danger); }
+.cat-ux      { background: var(--color-background-warning); color: var(--color-text-warning); }
+.cat-data    { background: var(--color-background-info);    color: var(--color-text-info); }
+.cat-product { background: var(--color-background-success); color: var(--color-text-success); }
+.problem-title { font-size: 14px; font-weight: 500; color: var(--color-text-primary); line-height: 1.4; }
+.problem-fix {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 0.5px solid var(--color-border-tertiary);
+  line-height: 1.5;
+}
+.fix-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  display: inline;
+  margin-right: 4px;
+}
+.legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  align-items: center;
+}
+.legend-dot {
+  width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 4px;
+}
+.dot-vision  { background: var(--color-background-danger); }
+.dot-ux      { background: var(--color-background-warning); }
+.dot-data    { background: var(--color-background-info); }
+.dot-product { background: var(--color-background-success); }
+</style>
+
+<h2 class="sr-only">StudyFlow — complete problem list comparing original vision to current build</h2>
+
+<div class="legend">
+  <span><span class="legend-dot dot-vision"></span>Missing from vision</span>
+  <span><span class="legend-dot dot-ux"></span>UX/feedback gaps</span>
+  <span><span class="legend-dot dot-data"></span>Data/intelligence gaps</span>
+  <span><span class="legend-dot dot-product"></span>Product completeness</span>
+</div>
+
+<div class="section-label">The big one — the entire original concept is missing</div>
+
+<div class="problem" onclick="sendPrompt('How do I build a browser extension for StudyFlow that tracks websites visited and time spent on each?')">
+  <div class="problem-top">
+    <div class="num cat-vision">1</div>
+    <div>
+      <div class="problem-title">No browser extension — the passive tracking never got built</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Build a Chrome/Firefox extension that logs domain + time spent. POST to /api/sessions automatically when a study-related domain is visited for 2+ min. The whole point was zero manual logging.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I build website categorization for the StudyFlow browser extension so it knows which sites are study-related?')">
+  <div class="problem-top">
+    <div class="num cat-vision">2</div>
+    <div>
+      <div class="problem-title">No automatic site-to-topic mapping</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Maintain a mapping: "khanacademy.org/math" → topic id 4. Let users manually tag unknown domains. Extension sends domain → backend resolves topic → auto-logs session.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I detect passive vs active studying in the StudyFlow browser extension — e.g. scrolling a doc vs watching a lecture?')">
+  <div class="problem-top">
+    <div class="num cat-vision">3</div>
+    <div>
+      <div class="problem-title">No distraction detection — off-task browsing is invisible</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Track active vs background tab state. If user has YouTube open alongside Khan Academy, flag it. The discipline score (D) needs to know when they drifted.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I build a StudyFlow extension popup that shows todays schedule and lets you start a session from the browser toolbar?')">
+  <div class="problem-top">
+    <div class="num cat-vision">4</div>
+    <div>
+      <div class="problem-title">No extension popup / browser-native UI</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Extension toolbar icon shows today's next scheduled block. One-click to start a timed session. No need to open the web app at all during study.</div>
+    </div>
+  </div>
+</div>
+
+<div class="section-label">UX and feedback gaps</div>
+
+<div class="problem" onclick="sendPrompt('How do I add mastery delta feedback to the session logging flow in StudyFlow — showing before and after scores?')">
+  <div class="problem-top">
+    <div class="num cat-ux">5</div>
+    <div>
+      <div class="problem-title">Logging a session feels like nothing happened</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> After saving, show "Mastery: 38% → 51%" in the toast. Animate the progress bar on the topic card. Make the update visible, not silent.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I add a system narrative card to the StudyFlow dashboard that explains the state vector in plain English?')">
+  <div class="problem-top">
+    <div class="num cat-ux">6</div>
+    <div>
+      <div class="problem-title">The algorithm never speaks — numbers sit silent</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Add an insight card: "Discipline dropped to 61% — today's schedule is lighter. Last studied Chemistry 9 days ago — it's urgent." Plain English from the state vector.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I build a getting-started checklist for StudyFlow onboarding so new users know what to do after sign-up?')">
+  <div class="problem-top">
+    <div class="num cat-ux">7</div>
+    <div>
+      <div class="problem-title">Onboarding drops you in an empty dashboard with no guidance</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Show a 3-step checklist: ☐ Add your first 3 topics → ☐ Run schedule → ☐ Log first session. Dismiss when complete. System is useless until these happen.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I add session context to each StudyFlow schedule block — why is this topic scheduled today?')">
+  <div class="problem-top">
+    <div class="num cat-ux">8</div>
+    <div>
+      <div class="problem-title">Schedule blocks have no context — just a topic name and a timer</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Under each block: "Last studied 11 days ago · 43% mastery · prerequisites met · focus on understanding, not practice yet."</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I add a study timer to StudyFlow that auto-logs when you stop studying?')">
+  <div class="problem-top">
+    <div class="num cat-ux">9</div>
+    <div>
+      <div class="problem-title">No in-app study timer — you have to guess your duration</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> "Start session" button begins a timer. When you stop, it pre-fills the duration in the log form. Actual time, not estimated.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I add a readiness forecast to StudyFlow showing projected curriculum coverage by exam date?')">
+  <div class="problem-top">
+    <div class="num cat-ux">10</div>
+    <div>
+      <div class="problem-title">Topics have no connection to exam outcome</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Add a "Readiness forecast" bar above the topic list. Project coverage at exam date based on current mastery velocity. "At this pace: 68% coverage by May 12."</div>
+    </div>
+  </div>
+</div>
+
+<div class="section-label">Data and intelligence gaps</div>
+
+<div class="problem" onclick="sendPrompt('How do I fix the StudyFlow discipline score so it uses actual time-on-site data instead of manually logged duration?')">
+  <div class="problem-top">
+    <div class="num cat-data">11</div>
+    <div>
+      <div class="problem-title">Discipline score (D) is based on self-reported data — easily gamed</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Once the extension exists, D should use verified active-tab time, not what the user typed. Self-reported hours are useless for a discipline metric.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I add spaced repetition logic to the StudyFlow scheduler so topics resurface at the right interval?')">
+  <div class="problem-top">
+    <div class="num cat-data">12</div>
+    <div>
+      <div class="problem-title">No spaced repetition — topics don't resurface at optimal intervals</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Add lastStudiedAt decay to the priority function. A topic mastered at 80% but not touched in 14 days should resurface — memory fades. SM-2 or a simplified forgetting curve.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I track learning velocity per topic in StudyFlow — how fast each topic's mastery is actually rising?')">
+  <div class="problem-top">
+    <div class="num cat-data">13</div>
+    <div>
+      <div class="problem-title">No per-topic learning velocity tracking</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Track mastery delta per session per topic. Surface: "Chemistry gains 8% per session — Math only 2%. Allocate more time to Math." The scheduler should factor in how quickly topics actually improve.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I add prerequisite-aware scheduling to StudyFlow so blocked topics show clearly why they cannot be scheduled?')">
+  <div class="problem-top">
+    <div class="num cat-data">14</div>
+    <div>
+      <div class="problem-title">Prerequisite logic is silent — users can't see why topics are blocked</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> On blocked topics, show: "Waiting on Calculus I (currently 44% — needs 60%)". Make the dependency graph visible, not just operative.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I add time-of-day performance tracking to StudyFlow so it can suggest optimal study windows?')">
+  <div class="problem-top">
+    <div class="num cat-data">15</div>
+    <div>
+      <div class="problem-title">No time-of-day awareness — schedule ignores when you study best</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Track mastery gains by hour-of-day across sessions. Surface: "Your best mastery gains happen 8–10am. Hard topics scheduled then by default."</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I add confidence score tracking to StudyFlow — separate from mastery, tracking how many questions have been attempted?')">
+  <div class="problem-top">
+    <div class="num cat-data">16</div>
+    <div>
+      <div class="problem-title">Confidence score (c_i) exists in the schema but is never updated or displayed</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> When a practice session is logged with test scores, update confidenceScore. Show it separately from masteryScore — you can have high mastery but low confidence if you haven't attempted many questions.</div>
+    </div>
+  </div>
+</div>
+
+<div class="section-label">Product completeness</div>
+
+<div class="problem" onclick="sendPrompt('How do I add push notifications or reminders to StudyFlow to prompt the user when a session should start?')">
+  <div class="problem-top">
+    <div class="num cat-product">17</div>
+    <div>
+      <div class="problem-title">No reminders — the app only works if you remember to open it</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Browser notifications (via extension) or email reminders at scheduled session times. "Your Organic Chemistry block starts in 15 min."</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I add a dark/light mode toggle and mobile responsiveness improvements to StudyFlow?')">
+  <div class="problem-top">
+    <div class="num cat-product">18</div>
+    <div>
+      <div class="problem-title">Mobile layout is functional but not great — spacing and tap targets are off</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Audit touch targets on the schedule page. The "Done" buttons need to be 44px minimum. Sidebar collapses well but the hamburger trigger is too small.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I add a full mastery history chart per topic in StudyFlow showing how scores changed over time?')">
+  <div class="problem-top">
+    <div class="num cat-product">19</div>
+    <div>
+      <div class="problem-title">No per-topic history — you can't see how mastery changed over time</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Click a topic → see a small sparkline of mastery over sessions. Shows whether the formula is actually working or if a topic keeps fluctuating.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I add topic import from a syllabus CSV or PDF in StudyFlow so users do not have to enter topics manually?')">
+  <div class="problem-top">
+    <div class="num cat-product">20</div>
+    <div>
+      <div class="problem-title">Adding topics manually one by one is painful for real exams</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> Add CSV import for topics. USMLE Step 1 has 300+ topics — no one is entering those by hand. Even a paste-a-list text box would help massively.</div>
+    </div>
+  </div>
+</div>
+
+<div class="problem" onclick="sendPrompt('How do I add a weekly review screen to StudyFlow that summarizes what got done, what was missed, and what to focus on next week?')">
+  <div class="problem-top">
+    <div class="num cat-product">21</div>
+    <div>
+      <div class="problem-title">No weekly review — the system never pauses to reflect</div>
+      <div class="problem-fix"><span class="fix-label">Fix:</span> A Sunday summary view: sessions logged, mastery gained per subject, topics that got skipped, one recommendation for the coming week. Closes the weekly loop.</div>
+    </div>
+  </div>
+</div>
+</style>

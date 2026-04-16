@@ -20,18 +20,45 @@ function parseDeps(prerequisites: string): number[] {
   }
 }
 
+function daysSinceStudied(lastStudiedAt: Date | null): number {
+  if (!lastStudiedAt) return 999;
+  const diff = Date.now() - new Date(lastStudiedAt).getTime();
+  return Math.floor(diff / (1000 * 60 * 60 * 24));
+}
+
+/**
+ * Ebbinghaus forgetting curve: R = e^(-t/S)
+ * Stability S scales with mastery: well-mastered topics retain longer.
+ * mastery=0 → S=3 days, mastery=1 → S=21 days
+ */
+function forgettingRetention(mastery: number, days: number): number {
+  const stability = 3 + mastery * 18;
+  return Math.exp(-days / stability);
+}
+
 function computePriority(
   mastery: number,
   difficulty: number,
   estimatedHours: number,
   daysUntilExam: number,
   disciplineScore: number,
+  lastStudiedAt: Date | null,
 ): number {
+  const days = daysSinceStudied(lastStudiedAt);
+  const retention = forgettingRetention(mastery, days);
+
+  // Effective mastery decays if topic hasn't been reviewed
+  const effectiveMastery = mastery * retention;
+
   const urgency = daysUntilExam > 0 ? estimatedHours / daysUntilExam : estimatedHours;
-  const knowledgeGap = 1 - mastery;
+  const knowledgeGap = 1 - effectiveMastery;
   const difficultyWeight = difficulty / 5;
   const discFactor = 1 / Math.max(disciplineScore, 0.1);
-  return urgency * knowledgeGap * difficultyWeight * discFactor;
+
+  // Recency boost: topics dormant > 7 days get an extra nudge
+  const recencyBoost = days > 7 ? 1 + (days - 7) / 14 : 1;
+
+  return urgency * knowledgeGap * difficultyWeight * discFactor * recencyBoost;
 }
 
 function daysUntil(examDate: string): number {
@@ -78,7 +105,7 @@ export async function recalculateSchedule(): Promise<{
         return dep ? dep.masteryScore >= 0.6 || dep.isCompleted : true;
       });
       const priority = allDepsComplete
-        ? computePriority(t.masteryScore, t.difficultyLevel, t.estimatedHours, days, profile.disciplineScore)
+        ? computePriority(t.masteryScore, t.difficultyLevel, t.estimatedHours, days, profile.disciplineScore, t.lastStudiedAt)
         : 0;
       return { ...t, priority, allDepsComplete };
     })
@@ -128,25 +155,33 @@ export async function applyMasteryUpdate(
   topicId: number,
   testScore: number,
   testScoreMax: number,
-): Promise<void> {
+): Promise<{ masteryBefore: number; masteryAfter: number }> {
   const [topic] = await db.select().from(topicsTable).where(eq(topicsTable.id, topicId));
-  if (!topic) return;
+  if (!topic) return { masteryBefore: 0, masteryAfter: 0 };
 
+  const masteryBefore = topic.masteryScore;
   const nt = topic.testsCount + 1;
   const alpha = 1 / nt;
   const normalizedScore = testScore / Math.max(testScoreMax, 1);
   const newMastery = topic.masteryScore + alpha * (normalizedScore - topic.masteryScore);
+  const masteryAfter = Math.min(Math.max(newMastery, 0), 1);
+
+  // Confidence score grows with practice attempts: asymptotes toward 1
+  // after ~20 tests. Uses Wilson-style formula: nt / (nt + 10)
+  const newConfidence = nt / (nt + 10);
 
   await db
     .update(topicsTable)
     .set({
-      masteryScore: Math.min(Math.max(newMastery, 0), 1),
+      masteryScore: masteryAfter,
       testsCount: nt,
+      confidenceScore: newConfidence,
       updatedAt: new Date(),
     })
     .where(eq(topicsTable.id, topicId));
 
   await recomputePriorities();
+  return { masteryBefore, masteryAfter };
 }
 
 export async function recomputePriorities(): Promise<void> {
@@ -163,6 +198,7 @@ export async function recomputePriorities(): Promise<void> {
       topic.estimatedHours,
       days,
       profile.disciplineScore,
+      topic.lastStudiedAt,
     );
     await db
       .update(topicsTable)

@@ -4,7 +4,6 @@ import { eq, desc } from "drizzle-orm";
 import { applyMasteryUpdate, updateCapacityAndDiscipline } from "../lib/scheduler";
 import {
   LogSessionBody,
-  ListSessionsQueryParams,
   GetSessionParams,
 } from "@workspace/api-zod";
 
@@ -22,15 +21,27 @@ function formatSession(s: typeof studySessionsTable.$inferSelect) {
 }
 
 router.get("/sessions", async (req, res): Promise<void> => {
-  const parsed = ListSessionsQueryParams.safeParse(req.query);
-  const limit = parsed.success ? (parsed.data.limit ?? 20) : 20;
+  const limit = parseInt(req.query.limit as string) || 50;
+  const topicId = req.query.topicId ? parseInt(req.query.topicId as string) : null;
 
-  const sessions = await db
+  let query = db
     .select()
     .from(studySessionsTable)
     .orderBy(desc(studySessionsTable.studiedAt))
-    .limit(limit);
+    .limit(Math.min(limit, 200));
 
+  if (topicId && !isNaN(topicId)) {
+    const sessions = await db
+      .select()
+      .from(studySessionsTable)
+      .where(eq(studySessionsTable.topicId, topicId))
+      .orderBy(desc(studySessionsTable.studiedAt))
+      .limit(Math.min(limit, 200));
+    res.json(sessions.map(formatSession));
+    return;
+  }
+
+  const sessions = await query;
   res.json(sessions.map(formatSession));
 });
 

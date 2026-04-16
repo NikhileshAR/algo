@@ -7,6 +7,7 @@ import {
   History,
   Settings,
   Menu,
+  BarChart2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -16,13 +17,13 @@ const NAV_ITEMS = [
   { href: "/schedule", label: "Schedule", icon: CalendarDays },
   { href: "/topics", label: "Topics", icon: Library },
   { href: "/sessions", label: "Sessions", icon: History },
+  { href: "/review", label: "Weekly Review", icon: BarChart2 },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
   const [location] = useLocation();
 
-  // Don't show layout on onboarding
   if (location === "/onboarding") {
     return <>{children}</>;
   }
@@ -45,13 +46,13 @@ export function Layout({ children }: { children: ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2 transition-all ${
+                className={`flex items-center gap-3 rounded-lg px-3 py-2.5 min-h-[44px] transition-all ${
                   isActive
                     ? "bg-primary text-primary-foreground"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 }`}
               >
-                <item.icon className="h-4 w-4" />
+                <item.icon className="h-4 w-4 shrink-0" />
                 {item.label}
               </Link>
             );
@@ -67,10 +68,10 @@ export function Layout({ children }: { children: ReactNode }) {
         <SidebarContent />
       </div>
       <div className="flex flex-col flex-1">
-        <header className="flex h-14 items-center gap-4 border-b bg-background px-4 lg:h-[60px] lg:px-6 md:hidden">
+        <header className="flex h-14 items-center gap-4 border-b bg-background px-4 md:hidden">
           <Sheet>
             <SheetTrigger asChild>
-              <Button variant="outline" size="icon" className="shrink-0 md:hidden">
+              <Button variant="outline" size="icon" className="shrink-0 min-h-[44px] min-w-[44px]">
                 <Menu className="h-5 w-5" />
                 <span className="sr-only">Toggle navigation menu</span>
               </Button>

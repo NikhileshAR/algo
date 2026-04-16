@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "StudyFlow Tracker",
+  "version": "1.0.0",
+  "description": "Passive study tracking for StudyFlow — logs time on study sites automatically and shows your schedule in one click.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "alarms",
+    "idle",
+    "notifications"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "StudyFlow"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+}

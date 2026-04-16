@@ -1,0 +1,53 @@
+Looking at your StudyFlow codebase, I can see exactly what it is — it's a solid, functional adaptive study scheduler. But let me think about what feels "off" about it and give you a real diagnosis.
+
+Let me ask a quick question to point you in the right direction:Here's my detailed diagnosis based on your answer — **it lacks depth and feels like a CRUD app**.
+
+---
+
+## What's actually missing
+
+### 1. The "adaptive" intelligence is invisible
+
+The app *has* the math — mastery updates, priority scores, capacity tracking — but **nothing communicates it to the user**. The dashboard shows numbers but never explains *why* today's schedule looks the way it does, or what's happening to your state over time. A user can't feel the system working.
+
+**What's missing:** Narrative feedback. Something like *"Your capacity dropped to 2.1h — you've been studying less than scheduled. Today's plan is lighter."* The algorithm exists but has no voice.
+
+---
+
+### 2. The study loop has no closure
+
+The core loop is: **see schedule → study → log session → repeat**. But there's no moment of satisfaction or progress signal. After logging a session, nothing changes visibly on the dashboard in a meaningful way. No mastery animation, no "you're getting closer" signal, no streak celebration.
+
+**What's missing:** Micro-feedback loops. When you log a session and your mastery on a topic jumps from 30% → 52%, that should be *felt*, not just stored in a database.
+
+---
+
+### 3. Topics are orphaned from outcomes
+
+The Topics page is a list manager. You can add topics and see mastery bars, but there's no connection between *"I have 12 topics"* and *"here's what happens to my exam readiness over time."* There's no projection — no "at this rate, you'll cover 70% of your curriculum by exam day."
+
+**What's missing:** A forecast/projection view. Even a simple bar: *"Curriculum coverage at exam date: 74%"* would make the whole system feel alive.
+
+---
+
+### 4. Onboarding drops you off a cliff
+
+After you set up your profile, you land on a dashboard with no topics and an empty schedule. There's no "here's what to do next" guidance. The system can't demonstrate its value until you've added 5+ topics and logged sessions — but nothing guides you there.
+
+**What's missing:** A getting-started checklist or progressive onboarding that says *"Add 3 topics → recalculate schedule → log your first session"*.
+
+---
+
+### 5. The schedule feels mechanical, not personal
+
+The schedule page shows blocks with topic names, duration, and a "Done" button. But it doesn't answer *why* you're studying this today, what you should focus on in the session, or whether you're on track for the day.
+
+**What's missing:** Session context. Before each block: *"You haven't studied this in 8 days. Mastery is 40% — focus on the core concepts, not practice yet."*
+
+---
+
+## The one-sentence summary
+
+> The data model is smart but the product is mute — users interact with outcomes of the algorithm without ever understanding or feeling the intelligence behind it.
+
+Fix that gap and it transforms from a CRUD app into something that feels genuinely intelligent. The biggest bang for effort: **add narrative feedback to the dashboard** and **animate mastery changes when sessions are logged**.
