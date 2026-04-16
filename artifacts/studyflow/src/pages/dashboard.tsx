@@ -39,6 +39,7 @@ import {
   ArrowRight,
   Activity,
 } from "lucide-react";
+import { useTelemetrySummary } from "@/hooks/use-telemetry-summary";
 
 function StatCard({ title, value, description, icon: Icon }: { title: string; value: string | number; description?: string; icon: React.ElementType }) {
   return (
@@ -221,6 +222,7 @@ export default function Dashboard() {
     queryFn: () => fetch("/api/analytics/study-patterns").then((r) => r.json()),
     enabled: (summary?.weeklyStudiedHours ?? 0) > 0,
   });
+  const { data: telemetrySummary } = useTelemetrySummary();
 
   useEffect(() => {
     if (!profileLoading && profileError) setLocation("/onboarding");
@@ -282,6 +284,28 @@ export default function Dashboard() {
           </>
         )}
       </div>
+
+      {telemetrySummary && telemetrySummary.topics.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Activity className="h-4 w-4 text-primary" />
+              Automatic Telemetry (Today)
+            </CardTitle>
+            <CardDescription>Local-first extension signals powering scheduler input</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {telemetrySummary.topics.slice(0, 3).map((topic) => (
+              <div key={topic.topic} className="flex items-center justify-between text-sm">
+                <span className="font-medium">{topic.topic}</span>
+                <div className="text-xs text-muted-foreground">
+                  {topic.focusedMinutes.toFixed(0)}m focused · {Math.round(topic.focusRatio * 100)}% focus · Q{Math.round(topic.qualityScore * 100)}
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {summary && !summaryLoading && (
         <NarrativeInsights summary={summary} schedule={schedule} topicsCount={topicsCount} velocity={velocity} studyPatterns={studyPatterns} />
