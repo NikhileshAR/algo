@@ -160,6 +160,128 @@ export const SessionsRepo = {
   sourceWeight(source: LocalStudySession["source"]): number {
     return source === "manual" ? 0.5 : 1.0;
   },
+
+  /**
+   * Detect and resolve overlapping sessions (multi-device conflict resolution).
+   *
+   * Each session spans [studiedAt, studiedAt + durationMinutes).
+   * Overlapping sessions are resolved by these rules:
+   *
+   *   Rule A — Same topic, overlapping time:
+   *     Merge into one session. Keep:
+   *       - max(focusedTime) as durationMinutes (don't double-count)
+   *       - source = higher-quality source (auto > extension > manual)
+   *       - qualityScore = max of both
+   *     Rationale: one device tracked what the other missed; take the best.
+   *
+   *   Rule B — Different topics, overlapping time:
+   *     The student cannot genuinely study two topics simultaneously.
+   *     Keep both sessions but reduce each by the overlap duration so that
+   *     total credited time = actual wall-clock time.
+   *     Log a ConflictRecord for auditability.
+   *
+   * Returns:
+   *   resolved   — deduplicated / trimmed sessions (input is NOT modified)
+   *   conflicts  — list of detected overlaps with the applied rule
+   *
+   * This is a pure function — does NOT write to IndexedDB. Call site must
+   * persist the resolved list if desired.
+   */
+  resolveOverlaps(sessions: LocalStudySession[]): {
+    resolved: LocalStudySession[];
+    conflicts: Array<{
+      sessionA: LocalStudySession;
+      sessionB: LocalStudySession;
+      overlapMinutes: number;
+      rule: "merged" | "split";
+    }>;
+  } {
+    type Interval = { start: number; end: number; session: LocalStudySession };
+
+    const toInterval = (s: LocalStudySession): Interval => ({
+      start: new Date(s.studiedAt).getTime(),
+      end: new Date(s.studiedAt).getTime() + s.durationMinutes * 60_000,
+      session: s,
+    });
+
+    const sourceRank = (source: LocalStudySession["source"]): number =>
+      source === "auto" ? 3 : source === "extension" ? 2 : 1;
+
+    const intervals = sessions.map(toInterval).sort((a, b) => a.start - b.start);
+    const conflicts: Array<{
+      sessionA: LocalStudySession;
+      sessionB: LocalStudySession;
+      overlapMinutes: number;
+      rule: "merged" | "split";
+    }> = [];
+
+    // Work on a mutable copy of durations/sources
+    type MutableSession = LocalStudySession & { _durationMs: number };
+    const mutable: MutableSession[] = intervals.map((iv) => ({
+      ...iv.session,
+      _durationMs: iv.end - iv.start,
+    }));
+
+    // Pairwise overlap detection (O(n²) — acceptable for ≤200 sessions/day)
+    const merged = new Set<number>(); // indexes to remove (absorbed by merge)
+
+    for (let i = 0; i < mutable.length; i++) {
+      if (merged.has(i)) continue;
+      const a = mutable[i];
+      const aStart = new Date(a.studiedAt).getTime();
+      const aEnd = aStart + a._durationMs;
+
+      for (let j = i + 1; j < mutable.length; j++) {
+        if (merged.has(j)) continue;
+        const b = mutable[j];
+        const bStart = new Date(b.studiedAt).getTime();
+        const bEnd = bStart + b._durationMs;
+
+        // No overlap — since sorted by start, all later j also won't overlap a
+        if (bStart >= aEnd) break;
+
+        const overlapMs = Math.min(aEnd, bEnd) - Math.max(aStart, bStart);
+        if (overlapMs <= 0) continue;
+
+        const overlapMinutes = Math.floor(overlapMs / 60_000);
+
+        if (a.topicId === b.topicId) {
+          // Rule A: same topic — merge, keep highest-quality session
+          const keepA = sourceRank(a.source) >= sourceRank(b.source);
+          const winner = keepA ? i : j;
+          const loser = keepA ? j : i;
+          // Extend winner's duration to span both windows (take the max end time)
+          const newEndMs = Math.max(aEnd, bEnd);
+          const winnerStart = new Date(mutable[winner].studiedAt).getTime();
+          mutable[winner] = {
+            ...mutable[winner],
+            _durationMs: newEndMs - winnerStart,
+            durationMinutes: Math.floor((newEndMs - winnerStart) / 60_000),
+            qualityScore: Math.max(a.qualityScore, b.qualityScore),
+            focusRatio: Math.max(a.focusRatio, b.focusRatio),
+          };
+          merged.add(loser);
+          conflicts.push({ sessionA: a, sessionB: b, overlapMinutes, rule: "merged" });
+        } else {
+          // Rule B: different topics — split the overlap proportionally
+          // Subtract overlap from the later-starting session (b)
+          const trimMs = overlapMs;
+          mutable[j] = {
+            ...mutable[j],
+            _durationMs: Math.max(b._durationMs - trimMs, 0),
+            durationMinutes: Math.max(Math.floor((b._durationMs - trimMs) / 60_000), 0),
+          };
+          conflicts.push({ sessionA: a, sessionB: b, overlapMinutes, rule: "split" });
+        }
+      }
+    }
+
+    const resolved = mutable
+      .filter((_, i) => !merged.has(i))
+      .map(({ _durationMs: _d, ...s }) => s as LocalStudySession);
+
+    return { resolved, conflicts };
+  },
 };
 
 // ─── Schedules repository ─────────────────────────────────────────────────────
@@ -204,92 +326,238 @@ export const TelemetryRepo = {
     return getByIndexRange<LocalTelemetryEvent>(STORE.TELEMETRY, "timestamp", range);
   },
 
-  /** Aggregate raw telemetry events into per-topic daily summaries. */
+  /**
+   * Aggregate raw telemetry events into per-topic daily summaries.
+   *
+   * Quality model — five behaviorally-strict signals:
+   *
+   *   focusRatio (weight 0.35)
+   *     = focusedMs / (focusedMs + distractionMs + idleMs)
+   *     Only foreground, non-idle time counts as focused.
+   *
+   *   interactionDensity (weight 0.25)
+   *     = clamp(interactions / focusedMinutes, 0, 1)
+   *     Passive reading without any scroll/click = low quality.
+   *
+   *   fragmentationPenalty (weight 0.20)
+   *     = 1 / (1 + max(segmentCount - 1, 0) * 0.2)
+   *     One continuous focus segment = 1.0; each additional segment reduces it.
+   *
+   *   tabSwitchPenalty (weight 0.10)
+   *     = 1 / (1 + tabSwitchCount * 0.15)
+   *     Each context switch within a focus window reduces quality.
+   *
+   *   videoEngagement (weight 0.10)
+   *     = videoWatchedMs / videoTotalMs   (1.0 if no video events)
+   *     YouTube watchers who skip through get lower scores.
+   *
+   * qualityScore = sum of (signal * weight), rounded to 2 dp.
+   */
   summarizeDay(events: LocalTelemetryEvent[]): TelemetrySummary[] {
-    const byTopic = new Map<string, {
+    type TopicEntry = {
+      date: string;
       focusedMs: number;
       distractionMs: number;
+      idleMs: number;
       interactionCount: number;
-      focusSegments: Array<{ start: number; end: number }>;
+      tabSwitchCount: number;
+      focusSegmentCount: number;
+      // For fragmentation tracking
       currentFocusStart: number | null;
       currentDistractionStart: number | null;
-      date: string;
-    }>();
+      currentIdleStart: number | null;
+      inFocusWindow: boolean;
+      // Video engagement
+      videoWatchedMs: number;
+      videoTotalMs: number;
+    };
 
-    function ensureTopic(topicId: string, date: string) {
+    const byTopic = new Map<string, TopicEntry>();
+
+    function ensureTopic(topicId: string, date: string): TopicEntry {
       if (!byTopic.has(topicId)) {
         byTopic.set(topicId, {
+          date,
           focusedMs: 0,
           distractionMs: 0,
+          idleMs: 0,
           interactionCount: 0,
-          focusSegments: [],
+          tabSwitchCount: 0,
+          focusSegmentCount: 0,
           currentFocusStart: null,
           currentDistractionStart: null,
-          date,
+          currentIdleStart: null,
+          inFocusWindow: false,
+          videoWatchedMs: 0,
+          videoTotalMs: 0,
         });
       }
       return byTopic.get(topicId)!;
     }
 
-    for (const ev of events.sort((a, b) => a.timestamp.localeCompare(b.timestamp))) {
+    const sorted = [...events].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+    for (const ev of sorted) {
       if (!ev.topicId) continue;
       const ts = new Date(ev.timestamp).getTime();
       const date = ev.timestamp.split("T")[0];
-      const entry = ensureTopic(ev.topicId, date);
+      const e = ensureTopic(ev.topicId, date);
 
       switch (ev.type) {
         case "tab_focus":
-        case "session_start":
-          if (entry.currentDistractionStart !== null) {
-            entry.distractionMs += ts - entry.currentDistractionStart;
-            entry.currentDistractionStart = null;
+        case "session_start": {
+          // Close any open distraction window
+          if (e.currentDistractionStart !== null) {
+            e.distractionMs += ts - e.currentDistractionStart;
+            e.currentDistractionStart = null;
           }
-          entry.currentFocusStart = ts;
+          // Close any open idle window
+          if (e.currentIdleStart !== null) {
+            e.idleMs += ts - e.currentIdleStart;
+            e.currentIdleStart = null;
+          }
+          // Opening a new focus segment
+          if (!e.inFocusWindow) {
+            e.focusSegmentCount += 1;
+            e.inFocusWindow = true;
+          } else {
+            // Was already in focus window — rapid context switch back
+            // (Cmd+Tab / Alt+Tab return without an intervening tab_blur)
+            e.tabSwitchCount += 1;
+          }
+          e.currentFocusStart = ts;
           break;
+        }
 
         case "tab_blur":
-        case "session_end":
-          if (entry.currentFocusStart !== null) {
-            entry.focusedMs += ts - entry.currentFocusStart;
-            entry.currentFocusStart = null;
+        case "session_end": {
+          // Close focus window
+          if (e.currentFocusStart !== null) {
+            e.focusedMs += ts - e.currentFocusStart;
+            e.currentFocusStart = null;
           }
-          entry.currentDistractionStart = ts;
+          e.inFocusWindow = false;
+          // Start distraction window
+          e.currentDistractionStart = ts;
+          // Count the tab switch itself
+          e.tabSwitchCount += 1;
           break;
+        }
 
-        case "idle_start":
-          if (entry.currentFocusStart !== null) {
-            entry.focusedMs += ts - entry.currentFocusStart;
-            entry.currentFocusStart = null;
+        case "idle_start": {
+          // Idle interrupts focus, but is tracked separately from distraction
+          if (e.currentFocusStart !== null) {
+            e.focusedMs += ts - e.currentFocusStart;
+            e.currentFocusStart = null;
           }
+          e.inFocusWindow = false;
+          // Close distraction window too (idle is neither focused nor distraction)
+          if (e.currentDistractionStart !== null) {
+            e.distractionMs += ts - e.currentDistractionStart;
+            e.currentDistractionStart = null;
+          }
+          e.currentIdleStart = ts;
           break;
+        }
 
-        case "idle_end":
-          entry.currentFocusStart = ts;
+        case "idle_end": {
+          if (e.currentIdleStart !== null) {
+            e.idleMs += ts - e.currentIdleStart;
+            e.currentIdleStart = null;
+          }
+          // Resume focus (idle_end = user is back)
+          e.focusSegmentCount += 1;
+          e.inFocusWindow = true;
+          e.currentFocusStart = ts;
           break;
+        }
 
         case "scroll":
-        case "click":
-          entry.interactionCount += 1;
+        case "click": {
+          e.interactionCount += 1;
           break;
+        }
+
+        case "video_progress": {
+          // data.watchedMs: how much was actually watched in this tick
+          // data.totalMs: total video duration
+          const watchedMs = typeof ev.data.watchedMs === "number" ? ev.data.watchedMs : 0;
+          const totalMs = typeof ev.data.totalMs === "number" ? ev.data.totalMs : 0;
+          if (watchedMs > 0) e.videoWatchedMs += watchedMs;
+          if (totalMs > 0 && e.videoTotalMs < totalMs) {
+            // Only advance total if we see a larger value (last event wins)
+            e.videoTotalMs = totalMs;
+          }
+          break;
+        }
+      }
+    }
+
+    // Close any still-open windows at day boundary
+    const dayEndTs = Date.now();
+    for (const e of byTopic.values()) {
+      if (e.currentFocusStart !== null) {
+        e.focusedMs += dayEndTs - e.currentFocusStart;
+        e.currentFocusStart = null;
+      }
+      if (e.currentDistractionStart !== null) {
+        e.distractionMs += dayEndTs - e.currentDistractionStart;
+        e.currentDistractionStart = null;
+      }
+      if (e.currentIdleStart !== null) {
+        e.idleMs += dayEndTs - e.currentIdleStart;
+        e.currentIdleStart = null;
       }
     }
 
     const summaries: TelemetrySummary[] = [];
-    for (const [topicId, entry] of byTopic.entries()) {
-      const focusedMin = Math.floor(entry.focusedMs / 60_000);
-      const distractionMin = Math.floor(entry.distractionMs / 60_000);
-      const total = focusedMin + distractionMin;
-      const focusRatio = total > 0 ? focusedMin / total : 0;
-      // Quality: blend of focus ratio and interaction density
-      const interactionRate = focusedMin > 0 ? Math.min(entry.interactionCount / focusedMin, 1) : 0;
-      const qualityScore = Math.round((focusRatio * 0.7 + interactionRate * 0.3) * 100) / 100;
+
+    for (const [topicId, e] of byTopic.entries()) {
+      const focusedMin = Math.floor(e.focusedMs / 60_000);
+      const distractionMin = Math.floor(e.distractionMs / 60_000);
+      const idleMin = Math.floor(e.idleMs / 60_000);
+
+      // focusRatio: focused time over all tracked time (excludes closed windows)
+      const totalTracked = e.focusedMs + e.distractionMs + e.idleMs;
+      const focusRatio = totalTracked > 0 ? e.focusedMs / totalTracked : 0;
+
+      // interactionDensity: interactions per focused minute, capped at 1
+      const interactionDensity = focusedMin > 0 ? Math.min(e.interactionCount / focusedMin, 1) : 0;
+
+      // fragmentationPenalty: 1 continuous session = 1.0; each extra segment −0.2
+      const fragmentationPenalty = e.focusSegmentCount > 0
+        ? 1 / (1 + Math.max(e.focusSegmentCount - 1, 0) * 0.2)
+        : 1;
+
+      // tabSwitchPenalty: each switch reduces quality by 0.15 (diminishing returns via division)
+      const tabSwitchPenalty = 1 / (1 + e.tabSwitchCount * 0.15);
+
+      // videoEngagement: 1.0 if no video events; else watched/total
+      const videoEngagementRatio = e.videoTotalMs > 0
+        ? Math.min(e.videoWatchedMs / e.videoTotalMs, 1)
+        : 1;
+
+      // Composite quality score (five weighted signals)
+      const qualityScore = Math.round(
+        (
+          focusRatio * 0.35 +
+          interactionDensity * 0.25 +
+          fragmentationPenalty * 0.20 +
+          tabSwitchPenalty * 0.10 +
+          videoEngagementRatio * 0.10
+        ) * 100,
+      ) / 100;
 
       summaries.push({
-        date: entry.date,
+        date: e.date,
         topicId,
         focusedMinutes: focusedMin,
         distractionMinutes: distractionMin,
-        interactionCount: entry.interactionCount,
+        idleMinutes: idleMin,
+        interactionCount: e.interactionCount,
+        tabSwitchCount: e.tabSwitchCount,
+        focusSegmentCount: e.focusSegmentCount,
+        videoEngagementRatio,
         focusRatio: Math.round(focusRatio * 100) / 100,
         qualityScore,
       });

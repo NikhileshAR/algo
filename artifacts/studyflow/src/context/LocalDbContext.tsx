@@ -23,7 +23,6 @@ import React, {
   useCallback,
   useContext,
   useEffect,
-  useRef,
   useState,
 } from "react";
 
@@ -37,7 +36,7 @@ import {
   OverridesRepo,
   MetaRepo,
 } from "@/lib/local-db/repositories";
-import { startNightlyScheduler, requestOverride, DAILY_OVERRIDE_LIMIT } from "@/lib/local-db/nightly";
+import { ensureTodaySchedule, requestOverride, DAILY_OVERRIDE_LIMIT } from "@/lib/local-db/nightly";
 import {
   checkServerAvailable,
   serverHasProfile,
@@ -147,8 +146,6 @@ export function LocalDbProvider({ children }: { children: React.ReactNode }) {
   const [serverApiUrl, setServerApiUrl] = useState<string | null>(null);
   const [overrideCountToday, setOverrideCountToday] = useState(0);
 
-  const nightlyCleanupRef = useRef<(() => void) | null>(null);
-
   // ── Load all data from IndexedDB ──────────────────────────────────────────
   const loadAll = useCallback(async () => {
     const [p, t, s, sched] = await Promise.all([
@@ -175,33 +172,54 @@ export function LocalDbProvider({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         await loadAll();
 
-        // Start nightly scheduler
-        nightlyCleanupRef.current = startNightlyScheduler(async (newSchedule) => {
+        // ── Lazy schedule: compute today's schedule on first open ──────────
+        // This replaces the old "setTimeout at 11pm" approach. The schedule
+        // is generated deterministically the first time the user opens the
+        // app on any given day. If the schedule already exists, this is a no-op.
+        ensureTodaySchedule(async (newSchedule) => {
           if (!cancelled) {
             setTodaySchedule(newSchedule);
             const updatedTopics = await TopicsRepo.list();
             setTopics(updatedTopics);
           }
+        }).catch((err) => {
+          if (!cancelled) {
+            // Non-fatal: schedule compute failed. App still works, user can
+            // trigger a manual recalculation via the override button.
+            console.error("[StudyFlow] Lazy schedule compute failed:", err);
+            setInitError(
+              err instanceof Error
+                ? `Schedule compute failed: ${err.message}`
+                : "Schedule compute failed — tap Recalculate to retry.",
+            );
+          }
         });
 
-        // Migration check
+        // Mark the app as ready immediately — DO NOT wait for the server check.
+        // The server check is purely for the optional one-time migration banner.
+        if (!cancelled) setReady(true);
+
+        // ── Server migration discovery (fire-and-forget) ───────────────────
+        // This must never block the ready state or any core flow.
         const storedMigration = await getMigrationStatus();
         if (storedMigration) {
-          setMigrationStatus(storedMigration);
+          if (!cancelled) setMigrationStatus(storedMigration);
         } else {
-          // Try to discover the server
-          const guessedUrl = window.location.origin;
-          const available = await checkServerAvailable(guessedUrl);
-          if (available) {
-            const hasProfile = await serverHasProfile(guessedUrl);
-            if (hasProfile) {
-              setServerApiUrl(guessedUrl);
-              setMigrationStatus("available");
+          // Try to discover the server — non-blocking, best-effort
+          try {
+            const guessedUrl = window.location.origin;
+            const available = await checkServerAvailable(guessedUrl);
+            if (available && !cancelled) {
+              const hasProfile = await serverHasProfile(guessedUrl);
+              if (hasProfile && !cancelled) {
+                setServerApiUrl(guessedUrl);
+                setMigrationStatus("available");
+              }
             }
+          } catch {
+            // Server not reachable — that's fine; app works fully offline
           }
         }
-
-        if (!cancelled) setReady(true);
       } catch (err) {
         if (!cancelled) {
           setInitError(err instanceof Error ? err.message : "Failed to open local database");
@@ -214,7 +232,6 @@ export function LocalDbProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       cancelled = true;
-      nightlyCleanupRef.current?.();
     };
   }, [loadAll]);
 

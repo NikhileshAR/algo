@@ -1,15 +1,26 @@
 /**
- * Nightly schedule recomputation — Phase 1
+ * Schedule computation — Phase 1 (revised)
  *
- * The schedule is computed ONCE per day at 11 pm in the user's local timezone.
- * On-demand recalculation via the UI is an override and is rate-limited to
- * once per day. Every override is logged to the overrides store.
+ * LAZY / DETERMINISTIC MODEL
+ * ──────────────────────────
+ * The old "setTimeout at 11 pm" approach was replaced because:
+ *   - Browsers sleep background tabs
+ *   - Laptops shut down
+ *   - The tab may not be open at a specific clock time
  *
- * Boot sequence (called from the React provider on app startup):
- *   1. Check if today's nightly run has already completed.
- *   2. If not, and it is past 11 pm, run immediately.
- *   3. If before 11 pm, schedule a setTimeout for tonight's 11 pm.
- *   4. Return a cleanup function to cancel any pending timer.
+ * Instead, scheduling is LAZY and DETERMINISTIC:
+ *
+ *   On every app open → ensureTodaySchedule()
+ *     If today already has a schedule → return it immediately (no-op).
+ *     If today has no schedule → compute now, persist, return it.
+ *
+ * This is equivalent to "nightly compute" but works offline-first:
+ * the schedule is generated the first time the user opens the app each day,
+ * using the full telemetry history available at that moment.
+ *
+ * Override (manual recalculate button):
+ *   - Rate-limited to once per day
+ *   - Logs an audit record
  */
 
 import { MetaRepo, SchedulesRepo, OverridesRepo, ProfileRepo, TopicsRepo, TelemetryRepo } from "./repositories";
@@ -17,12 +28,6 @@ import { computeSchedule } from "./scheduler-algo";
 import type { LocalDailySchedule, SchedulerInput, TelemetrySummary } from "./schema";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-
-/** Hour of day (local time) at which the nightly job fires */
-const NIGHTLY_HOUR = 23; // 11 pm
-
-/** Milliseconds in one day */
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** Maximum number of manual override recalculations allowed per day */
 export const DAILY_OVERRIDE_LIMIT = 1;
@@ -33,10 +38,10 @@ export const DAILY_OVERRIDE_LIMIT = 1;
  * Assembles a SchedulerInput from IndexedDB and runs computeSchedule.
  * Persists the resulting schedule and updates profile + topic priorities.
  *
- * @param computedBy - "nightly" for the scheduled job, "override" for UI button
+ * @param computedBy - "lazy_open" for the automatic path, "override" for UI button
  */
 export async function runSchedulerJob(
-  computedBy: "nightly" | "override" = "nightly",
+  computedBy: "lazy_open" | "override" = "lazy_open",
 ): Promise<LocalDailySchedule> {
   const [profile, topics] = await Promise.all([
     ProfileRepo.get(),
@@ -82,87 +87,56 @@ export async function runSchedulerJob(
     await TopicsRepo.update(id, { priorityScore });
   }
 
-  // Record last nightly run date
-  await MetaRepo.set("last_nightly_run_date", today);
+  // Record the date of the last computed schedule
+  await MetaRepo.set("last_schedule_date", today);
 
   return schedule;
 }
 
-// ─── Nightly scheduler ────────────────────────────────────────────────────────
+// ─── Lazy open-time trigger ───────────────────────────────────────────────────
 
 /**
- * Returns the milliseconds until tonight's 11 pm in local time.
- * If it is already past 11 pm, returns 0.
- */
-function msUntilNightlyRun(): number {
-  const now = new Date();
-  const target = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-    NIGHTLY_HOUR,
-    0,
-    0,
-    0,
-  );
-  const ms = target.getTime() - now.getTime();
-  return ms > 0 ? ms : 0;
-}
-
-/**
- * Boot the nightly scheduler. Returns a cleanup function.
+ * Called on every app open. Ensures today's schedule exists.
  *
- * Behaviour:
- * - Checks if today's nightly run has already happened.
- * - If not, and it is past 11 pm → runs immediately (missed run).
- * - If not, and before 11 pm → schedules a timer for tonight's 11 pm.
- * - After running, schedules the next nightly alarm (24 h loop).
+ * Algorithm (lazy + deterministic):
+ *   1. Does a schedule for today already exist in IndexedDB?
+ *      YES → return it immediately (no computation, no network call)
+ *      NO  → compute now, persist, return
  *
- * @param onScheduleReady - optional callback when a new schedule is computed
+ * This replaces the old "setTimeout at 11 pm" approach which was fragile
+ * because the tab may not be open at that exact time. The lazy approach
+ * guarantees the schedule is always generated the first time the app opens
+ * on any given day — regardless of what time that is.
+ *
+ * @param onScheduleReady - optional callback when a schedule is freshly computed
+ * @returns The existing or newly computed schedule, or null if no profile exists
  */
-export function startNightlyScheduler(
+export async function ensureTodaySchedule(
   onScheduleReady?: (schedule: LocalDailySchedule) => void,
-): () => void {
-  let timerId: ReturnType<typeof setTimeout> | null = null;
+): Promise<LocalDailySchedule | null> {
+  const today = new Date().toISOString().split("T")[0];
 
-  async function runAndScheduleNext() {
-    try {
-      const schedule = await runSchedulerJob("nightly");
-      onScheduleReady?.(schedule);
-    } catch (err) {
-      console.error("[StudyFlow] Nightly scheduler failed:", err);
-    }
-    // Schedule the next run in ~24 h
-    timerId = setTimeout(runAndScheduleNext, MS_PER_DAY);
+  // Fast path: schedule already exists
+  const existing = await SchedulesRepo.getByDate(today);
+  if (existing) return existing;
+
+  // No profile yet — onboarding not done
+  const profile = await ProfileRepo.get();
+  if (!profile) return null;
+
+  // No topics yet — nothing to schedule
+  const topics = await TopicsRepo.list();
+  if (topics.length === 0) return null;
+
+  // Compute lazily on first open of the day
+  try {
+    const schedule = await runSchedulerJob("lazy_open");
+    onScheduleReady?.(schedule);
+    return schedule;
+  } catch (err) {
+    console.error("[StudyFlow] Lazy schedule compute failed:", err);
+    return null;
   }
-
-  async function boot() {
-    const today = new Date().toISOString().split("T")[0];
-    const lastRun = await MetaRepo.get<string>("last_nightly_run_date");
-
-    if (lastRun === today) {
-      // Already ran today — schedule for tomorrow night
-      const msLeft = msUntilNightlyRun() + MS_PER_DAY;
-      timerId = setTimeout(runAndScheduleNext, msLeft > 0 ? msLeft : MS_PER_DAY);
-      return;
-    }
-
-    const nowHour = new Date().getHours();
-    if (nowHour >= NIGHTLY_HOUR) {
-      // Past 11 pm and not yet run — run immediately (missed run)
-      await runAndScheduleNext();
-    } else {
-      // Schedule for tonight's 11 pm
-      const ms = msUntilNightlyRun();
-      timerId = setTimeout(runAndScheduleNext, ms);
-    }
-  }
-
-  void boot();
-
-  return () => {
-    if (timerId !== null) clearTimeout(timerId);
-  };
 }
 
 // ─── Override (manual recalculate) ───────────────────────────────────────────
@@ -170,10 +144,8 @@ export function startNightlyScheduler(
 /**
  * Manual override — recalculates today's schedule on demand.
  *
- * Rate-limited: returns null and the current override count if the daily
- * limit has already been reached. Logs an override record for audit.
- *
- * @returns { schedule, overrideCount } or { blocked: true, overrideCount }
+ * Rate-limited: returns { blocked: true } if the daily limit has already
+ * been reached. Logs an override record for audit.
  */
 export async function requestOverride(
   reason: string | null = null,
@@ -198,3 +170,4 @@ export async function requestOverride(
 
   return { schedule, overrideCount: overrideCount + 1 };
 }
+

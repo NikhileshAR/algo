@@ -133,7 +133,7 @@ export function computeSchedule(input: SchedulerInput): SchedulerResult {
     : profile.disciplineScore;
 
   // Note: previousScheduledHours uses the current capacityScore as the best
-  // available proxy for yesterday's scheduled load.  A dedicated stored field
+  // available proxy for yesterday's scheduled load. A dedicated stored field
   // would be more accurate but capacityScore (smoothed actual hours) is close
   // enough for the purposes of this update and avoids extra storage.
 
@@ -245,7 +245,7 @@ export function computeSchedule(input: SchedulerInput): SchedulerResult {
     scheduledHours,
     daysUntilExam: daysToExam,
     isReset,
-    computedBy: "nightly",
+    computedBy: "lazy_open",
     computedAt: new Date().toISOString(),
   };
 

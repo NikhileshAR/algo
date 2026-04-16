@@ -119,8 +119,12 @@ export interface LocalDailySchedule {
   scheduledHours: number;
   daysUntilExam: number;
   isReset: boolean;
-  /** "nightly" = automated 11 pm job; "override" = manual button press */
-  computedBy: "nightly" | "override";
+  /**
+   * How this schedule was triggered:
+   * - "lazy_open" = computed on first app open of the day (primary path)
+   * - "override"  = manual button press (rate-limited to once/day)
+   */
+  computedBy: "lazy_open" | "override";
   computedAt: string;
 }
 
@@ -149,13 +153,26 @@ export interface LocalTelemetryEvent {
 /**
  * Daily telemetry summary — pre-aggregated from raw events.
  * The scheduler reads this, not the raw events.
+ *
+ * Quality signals (all included in qualityScore):
+ *   focusRatio          — foreground focused time / total session time
+ *   interactionDensity  — interactions per focused minute (scroll + click), normalized 0–1
+ *   fragmentationPenalty— penalty for many short focus bursts (tab switching)
+ *   tabSwitchPenalty    — per-switch reduction for context fragmentation
+ *   videoEngagementRatio— proportion of video content that was actively watched (0–1, 1 if no video)
  */
 export interface TelemetrySummary {
   date: string; // YYYY-MM-DD
   topicId: string;
   focusedMinutes: number;
   distractionMinutes: number;
+  idleMinutes: number;
   interactionCount: number;
+  tabSwitchCount: number;
+  /** Number of distinct focus segments (tab_focus → tab_blur cycles) */
+  focusSegmentCount: number;
+  /** 0–1: proportion of video watched vs total video duration (1.0 if no video events) */
+  videoEngagementRatio: number;
   focusRatio: number;
   qualityScore: number;
 }
@@ -181,13 +198,13 @@ export interface MetaRecord {
  * Keys stored in the meta store.
  * - "db_version"            : number
  * - "server_migration"      : "done" | "skipped" | null
- * - "last_nightly_run_date" : YYYY-MM-DD
+ * - "last_schedule_date"    : YYYY-MM-DD (date for which a schedule was last lazily computed)
  * - "schema_initialized_at" : ISO timestamp
  */
 export type MetaKey =
   | "db_version"
   | "server_migration"
-  | "last_nightly_run_date"
+  | "last_schedule_date"
   | "schema_initialized_at";
 
 // ─── Scheduler I/O ────────────────────────────────────────────────────────────
