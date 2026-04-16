@@ -23,6 +23,14 @@ import type {
   TelemetrySummary,
 } from "./schema";
 
+// ─── Domain constants ─────────────────────────────────────────────────────────
+
+/**
+ * Minimum mastery score a prerequisite topic must reach before its dependant
+ * topic is considered unlocked in the schedule.
+ */
+export const PREREQUISITE_MASTERY_THRESHOLD = 0.6;
+
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 function daysSince(isoDate: string | null): number {
@@ -124,6 +132,11 @@ export function computeSchedule(input: SchedulerInput): SchedulerResult {
     ? updateDiscipline(previousScheduledHours, yesterdaySummaries)
     : profile.disciplineScore;
 
+  // Note: previousScheduledHours uses the current capacityScore as the best
+  // available proxy for yesterday's scheduled load.  A dedicated stored field
+  // would be more accurate but capacityScore (smoothed actual hours) is close
+  // enough for the purposes of this update and avoids extra storage.
+
   const yesterdayActualHours = yesterdaySummaries.reduce(
     (sum, s) => sum + s.focusedMinutes / 60,
     0,
@@ -151,7 +164,7 @@ export function computeSchedule(input: SchedulerInput): SchedulerResult {
       const deps = t.prerequisites;
       const allDepsUnlocked = deps.every((depId) => {
         const dep = topicMap.get(depId);
-        return dep ? dep.masteryScore >= 0.6 || dep.isCompleted : true;
+        return dep ? dep.masteryScore >= PREREQUISITE_MASTERY_THRESHOLD || dep.isCompleted : true;
       });
 
       const priority = allDepsUnlocked

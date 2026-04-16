@@ -21,6 +21,9 @@ import type { LocalDailySchedule, SchedulerInput, TelemetrySummary } from "./sch
 /** Hour of day (local time) at which the nightly job fires */
 const NIGHTLY_HOUR = 23; // 11 pm
 
+/** Milliseconds in one day */
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
 /** Maximum number of manual override recalculations allowed per day */
 export const DAILY_OVERRIDE_LIMIT = 1;
 
@@ -130,7 +133,7 @@ export function startNightlyScheduler(
       console.error("[StudyFlow] Nightly scheduler failed:", err);
     }
     // Schedule the next run in ~24 h
-    timerId = setTimeout(runAndScheduleNext, 24 * 60 * 60 * 1000);
+    timerId = setTimeout(runAndScheduleNext, MS_PER_DAY);
   }
 
   async function boot() {
@@ -139,8 +142,8 @@ export function startNightlyScheduler(
 
     if (lastRun === today) {
       // Already ran today — schedule for tomorrow night
-      const msLeft = msUntilNightlyRun() + 24 * 60 * 60 * 1000;
-      timerId = setTimeout(runAndScheduleNext, msLeft > 0 ? msLeft : 24 * 60 * 60 * 1000);
+      const msLeft = msUntilNightlyRun() + MS_PER_DAY;
+      timerId = setTimeout(runAndScheduleNext, msLeft > 0 ? msLeft : MS_PER_DAY);
       return;
     }
 

@@ -339,14 +339,20 @@ export function LocalDbProvider({ children }: { children: React.ReactNode }) {
       }
 
       // Update profile capacity and discipline (weighted)
+      // Aggregate all sessions from today to compute actual vs scheduled ratio.
       const prof = await ProfileRepo.get();
       if (prof) {
-        const actualHours = (durationMinutes / 60) * qualityWeight;
-        const newCapacity = 0.8 * prof.capacityScore + 0.2 * actualHours;
-        const newDiscipline = Math.min(
-          actualHours / Math.max(prof.dailyTargetHours, 0.1),
-          1,
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const todaySessionsAll = await SessionsRepo.listSince(todayStart.toISOString());
+        const todayFocusedHours = todaySessionsAll.reduce(
+          (sum, s) => sum + (s.durationMinutes / 60) * s.qualityWeight,
+          0,
         );
+        const newCapacity = 0.8 * prof.capacityScore + 0.2 * todayFocusedHours;
+        // D = focused hours today / scheduled hours (capped at 1)
+        const scheduledHours = Math.max(prof.dailyTargetHours, 0.1);
+        const newDiscipline = Math.min(todayFocusedHours / scheduledHours, 1);
         await ProfileRepo.patch({
           capacityScore: newCapacity,
           disciplineScore: newDiscipline,

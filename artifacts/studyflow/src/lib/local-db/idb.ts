@@ -51,7 +51,10 @@ export function openStudyFlowDB(): Promise<IDBDatabase> {
         const schedules = db.createObjectStore(STORE.SCHEDULES, {
           keyPath: "id",
         });
-        schedules.createIndex("date", "date", { unique: true });
+        // Not unique — multiple schedules can exist for the same date
+        // (e.g. nightly + override). SchedulesRepo.getByDate() returns the
+        // most-recently-computed one.
+        schedules.createIndex("date", "date", { unique: false });
 
         // ── telemetry ─────────────────────────────────────────────────────────
         const telemetry = db.createObjectStore(STORE.TELEMETRY, {
