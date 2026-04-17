@@ -250,7 +250,7 @@ export default function Dashboard() {
   const topicsCount = allTopics?.length ?? 0;
   const scheduleBlocks = Array.isArray(schedule?.blocks) ? schedule.blocks : [];
   const scheduleHours = typeof schedule?.scheduledHours === "number" ? schedule.scheduledHours : 0;
-  const normalizedSchedule = schedule && Array.isArray(schedule.blocks) ? { ...schedule, blocks: scheduleBlocks } : null;
+  const scheduleForInsights = schedule && Array.isArray(schedule.blocks) ? schedule : null;
   const hasSchedule = scheduleBlocks.length > 0;
   const hasStudied = (summary?.weeklyStudiedHours ?? 0) > 0;
   const showChecklist = !checklistDismissed && (!hasStudied || topicsCount < 3 || !hasSchedule);
@@ -287,7 +287,7 @@ export default function Dashboard() {
       </div>
 
       {summary && !summaryLoading && (
-        <NarrativeInsights summary={summary} schedule={normalizedSchedule} topicsCount={topicsCount} velocity={velocity} studyPatterns={studyPatterns} />
+        <NarrativeInsights summary={summary} schedule={scheduleForInsights} topicsCount={topicsCount} velocity={velocity} studyPatterns={studyPatterns} />
       )}
 
       {velocity && velocity.length > 0 && (
