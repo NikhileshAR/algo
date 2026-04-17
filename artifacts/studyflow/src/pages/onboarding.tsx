@@ -62,7 +62,7 @@ async function callAiEnrich(body: {
   currentLevel: Level;
   specificGoals?: string;
 }): Promise<AiEnrichmentResult> {
-  const res = await fetch("/api/ai/onboarding-enrich", {
+  const res = await fetch("http://localhost:8080/api/ai/onboarding-enrich", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),

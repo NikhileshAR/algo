@@ -3,6 +3,10 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import app from "./app";
 import { logger } from "./lib/logger";
+import { aiRouter } from "./routes/ai";
+
+
+app.use("/api/ai", aiRouter);
 
 // Load .env from the package root if it exists (development convenience)
 try {

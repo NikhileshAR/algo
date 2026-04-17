@@ -94,7 +94,6 @@ function NarrativeInsights({
     insights.push({ type: "info", text: `${days} days remaining — entering the critical revision window. The scheduler will start prioritising practice sessions over new lecture material.` });
   }
 
-  // Per-subject velocity insight (#13)
   if (velocity && velocity.length >= 2) {
     const withVelocity = velocity.filter((v) => v.velocityPerSession !== null);
     if (withVelocity.length >= 2) {
@@ -109,7 +108,6 @@ function NarrativeInsights({
     }
   }
 
-  // Time-of-day insight (#15)
   if (studyPatterns?.peakHour !== null && studyPatterns?.peakHour !== undefined && studyPatterns.totalSessions >= 3) {
     const h = studyPatterns.peakHour;
     const label = h === 0 ? "midnight" : h < 12 ? `${h}am` : h === 12 ? "noon" : `${h - 12}pm`;
@@ -287,14 +285,14 @@ export default function Dashboard() {
         <NarrativeInsights summary={summary} schedule={schedule} topicsCount={topicsCount} velocity={velocity} studyPatterns={studyPatterns} />
       )}
 
-      {velocity && velocity.length > 0 && (
+      {Array.isArray(velocity) && velocity.length > 0 && (
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
               <Activity className="h-4 w-4 text-primary" />
               Learning Velocity by Subject
             </CardTitle>
-            <CardDescription className="text-xs">Average mastery gain per practice session — where your effort is paying off</CardDescription>
+            <CardDescription className="text-xs">Average mastery gain per practice session</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {velocity.map((v) => (
@@ -348,7 +346,9 @@ export default function Dashboard() {
             <CardDescription>Highest urgency — study these next</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {topicsLoading ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-12" />) : priorityTopics && priorityTopics.length > 0 ? (
+            {topicsLoading ? (
+              Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)
+            ) : Array.isArray(priorityTopics) && priorityTopics.length > 0 ? (
               priorityTopics.map((topic) => (
                 <div key={topic.id} className="space-y-1" data-testid={`priority-topic-${topic.id}`}>
                   <div className="flex items-center justify-between text-sm">
@@ -356,9 +356,9 @@ export default function Dashboard() {
                       <span className="font-medium">{topic.name}</span>
                       <Badge variant="outline" className="text-xs py-0">{topic.subject}</Badge>
                     </div>
-                    <span className="text-muted-foreground text-xs">{Math.round(topic.masteryScore * 100)}%</span>
+                    <span className="text-muted-foreground text-xs">{Math.round((topic.masteryScore || 0) * 100)}%</span>
                   </div>
-                  <Progress value={topic.masteryScore * 100} className="h-1.5" />
+                  <Progress value={(topic.masteryScore || 0) * 100} className="h-1.5" />
                 </div>
               ))
             ) : (
@@ -371,7 +371,7 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {schedule && schedule.blocks.length > 0 && (
+      {schedule && Array.isArray(schedule.blocks) && schedule.blocks.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Today's Schedule</CardTitle>
@@ -399,29 +399,27 @@ export default function Dashboard() {
         </Card>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">System State</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {[
-              { label: "Discipline (D)", value: `${disciplinePercent}%`, percent: disciplinePercent },
-              { label: "Capacity (K)", value: `${summary?.capacityScore?.toFixed(1) ?? 0}h/day`, percent: Math.min(((summary?.capacityScore ?? 0) / 12) * 100, 100) },
-              { label: "Overall Mastery (M)", value: `${masteryPercent}%`, percent: masteryPercent },
-              { label: "Completion", value: `${completionPercent}%`, percent: completionPercent },
-            ].map(({ label, value, percent }) => (
-              <div key={label} className="space-y-1">
-                <div className="flex justify-between text-sm">
-                  <span>{label}</span>
-                  <span className="text-muted-foreground">{value}</span>
-                </div>
-                <Progress value={percent} className="h-2" />
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground">System State</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {[
+            { label: "Discipline (D)", value: `${disciplinePercent}%`, percent: disciplinePercent },
+            { label: "Capacity (K)", value: `${summary?.capacityScore?.toFixed(1) ?? 0}h/day`, percent: Math.min(((summary?.capacityScore ?? 0) / 12) * 100, 100) },
+            { label: "Overall Mastery (M)", value: `${masteryPercent}%`, percent: masteryPercent },
+            { label: "Completion", value: `${completionPercent}%`, percent: completionPercent },
+          ].map(({ label, value, percent }) => (
+            <div key={label} className="space-y-1">
+              <div className="flex justify-between text-sm">
+                <span>{label}</span>
+                <span className="text-muted-foreground">{value}</span>
               </div>
-            ))}
-          </CardContent>
-        </Card>
-      </div>
+              <Progress value={percent} className="h-2" />
+            </div>
+          ))}
+        </CardContent>
+      </Card>
     </div>
   );
 }

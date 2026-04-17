@@ -131,7 +131,7 @@ export default function Schedule() {
     };
   }, []);
 
-  const topicMap = new Map((topics ?? []).map((t) => [t.id, t]));
+  const topicMap = new Map((Array.isArray(topics) ? topics : []).map((t) => [t.id, t]));
 
   function getDaysSinceStudied(topicId: number): number | null {
     const topic = topicMap.get(topicId);
@@ -176,7 +176,6 @@ export default function Schedule() {
       },
     });
   }
-
   function onSubmit(data: z.infer<typeof logSessionSchema>) {
     const topic = topicMap.get(data.topicId);
     const topicName = selectedBlock?.topicName ?? topic?.name ?? "topic";
@@ -186,24 +185,14 @@ export default function Schedule() {
       { data: { topicId: data.topicId, sessionType: data.sessionType, durationMinutes: data.durationMinutes, testScore: data.testScore, testScoreMax: data.testScoreMax, notes: data.notes } },
       {
         onSuccess: () => {
-          let description = masteryBefore !== undefined
-            ? `Mastery was ${Math.round(masteryBefore * 100)}% — the algorithm is updating it now.`
-            : "Mastery and capacity scores updated.";
-
-          if (
-            data.sessionType === "practice" &&
-            data.testScore !== undefined &&
-            data.testScoreMax !== undefined &&
-            masteryBefore !== undefined &&
-            topic
-          ) {
+          let description = masteryBefore !== undefined ? `Mastery was ${Math.round(masteryBefore * 100)}% — the algorithm is updating it now.` : "Mastery and capacity scores updated.";
+          if (data.sessionType === "practice" && data.testScore !== undefined && data.testScoreMax !== undefined && masteryBefore !== undefined && topic) {
             const nt = topic.testsCount + 1;
             const alpha = 1 / nt;
             const normalized = data.testScore / Math.max(data.testScoreMax, 1);
             const newMastery = Math.min(1, Math.max(0, masteryBefore + alpha * (normalized - masteryBefore)));
             description = `Mastery: ${Math.round(masteryBefore * 100)}% → ${Math.round(newMastery * 100)}%`;
           }
-
           toast({ title: `Session logged · ${topicName}`, description });
           setLogOpen(false);
           form.reset();
@@ -213,14 +202,13 @@ export default function Schedule() {
           queryClient.invalidateQueries({ queryKey: getGetPriorityTopicsQueryKey() });
           queryClient.invalidateQueries({ queryKey: getListTopicsQueryKey() });
         },
-        onError: () => {
-          toast({ title: "Error", description: "Failed to log session.", variant: "destructive" });
-        },
+        onError: () => { toast({ title: "Error", description: "Failed to log session.", variant: "destructive" }); },
       }
     );
   }
 
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  const blocks = schedule && Array.isArray(schedule.blocks) ? schedule.blocks : [];
 
   return (
     <div className="space-y-6" data-testid="schedule-page">
@@ -230,14 +218,8 @@ export default function Schedule() {
           <p className="text-muted-foreground">{today}</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => openLog()} data-testid="button-log-session">
-            <CheckCircle2 className="h-4 w-4 mr-2" />
-            Log Session
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleRecalculate} disabled={recalculate.isPending} data-testid="button-recalculate">
-            <RefreshCw className={`h-4 w-4 mr-2 ${recalculate.isPending ? "animate-spin" : ""}`} />
-            Recalculate
-          </Button>
+          <Button variant="outline" size="sm" onClick={() => openLog()} data-testid="button-log-session"><CheckCircle2 className="h-4 w-4 mr-2" />Log Session</Button>
+          <Button variant="outline" size="sm" onClick={handleRecalculate} disabled={recalculate.isPending} data-testid="button-recalculate"><RefreshCw className={`h-4 w-4 mr-2 ${recalculate.isPending ? "animate-spin" : ""}`} />Recalculate</Button>
         </div>
       </div>
 
@@ -250,9 +232,7 @@ export default function Schedule() {
               <p className="text-xs text-muted-foreground">{activeTimer.sessionType} session in progress</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-xl font-bold text-primary tabular-nums">{formatElapsed(elapsed)}</span>
-          </div>
+          <span className="font-mono text-xl font-bold text-primary tabular-nums">{formatElapsed(elapsed)}</span>
         </div>
       )}
 
@@ -261,48 +241,19 @@ export default function Schedule() {
       ) : schedule ? (
         <>
           <div className="grid gap-4 md:grid-cols-3">
-            <Card>
-              <CardContent className="pt-4">
-                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><Clock className="h-4 w-4" />Scheduled today</div>
-                <p className="text-2xl font-bold">{schedule.scheduledHours.toFixed(1)}h</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-4">
-                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><BookOpen className="h-4 w-4" />Study blocks</div>
-                <p className="text-2xl font-bold">{schedule.blocks.length}</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-4">
-                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><Target className="h-4 w-4" />Days until exam</div>
-                <p className="text-2xl font-bold">{schedule.daysUntilExam}</p>
-              </CardContent>
-            </Card>
+            <Card><CardContent className="pt-4"><div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><Clock className="h-4 w-4" />Scheduled today</div><p className="text-2xl font-bold">{(schedule?.scheduledHours ?? 0).toFixed(1)}h</p></CardContent></Card>
+            <Card><CardContent className="pt-4"><div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><BookOpen className="h-4 w-4" />Study blocks</div><p className="text-2xl font-bold">{blocks.length}</p></CardContent></Card>
+            <Card><CardContent className="pt-4"><div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><Target className="h-4 w-4" />Days until exam</div><p className="text-2xl font-bold">{schedule.daysUntilExam}</p></CardContent></Card>
           </div>
 
-          {schedule.isReset && (
-            <div className="rounded-lg border bg-accent/50 px-4 py-3 text-sm text-accent-foreground">
-              Psychological reset applied — backlog cleared and schedule rebuilt from current position.
-            </div>
-          )}
-
           <div className="space-y-3">
-            {schedule.blocks.length === 0 ? (
-              <Card>
-                <CardContent className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                  <BookOpen className="h-10 w-10 mb-3 opacity-40" />
-                  <p className="font-medium">No study blocks scheduled</p>
-                  <p className="text-sm mt-1">Add topics first, then recalculate the schedule.</p>
-                </CardContent>
-              </Card>
+            {blocks.length === 0 ? (
+              <Card><CardContent className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground"><BookOpen className="h-10 w-10 mb-3 opacity-40" /><p className="font-medium">No study blocks scheduled</p><p className="text-sm mt-1">Add topics first, then recalculate the schedule.</p></CardContent></Card>
             ) : (
-              schedule.blocks.map((block, i) => {
+              blocks.map((block, i) => {
                 const daysSince = getDaysSinceStudied(block.topicId);
                 const hint = getSessionHint(block.masteryScore, block.sessionType, daysSince);
                 const isThisActive = activeTimer?.blockIndex === i;
-                const hasOtherActive = activeTimer !== null && !isThisActive;
-
                 return (
                   <Card key={i} className={`transition-all hover:shadow-md ${isThisActive ? "ring-2 ring-primary" : ""}`} data-testid={`block-${i}`}>
                     <CardContent className="pt-4">
@@ -315,55 +266,20 @@ export default function Schedule() {
                           </div>
                           <div className="space-y-2">
                             <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                              <span className="flex items-center gap-1">
-                                <Clock className="h-3 w-3" />
-                                {isThisActive ? `${formatElapsed(elapsed)} elapsed` : `${block.durationMinutes}m`}
-                              </span>
+                              <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{isThisActive ? formatElapsed(elapsed) : `${block.durationMinutes}m`}</span>
                               <span>Mastery: {Math.round(block.masteryScore * 100)}%</span>
-                              {daysSince !== null && daysSince > 0 && (
-                                <span className="text-xs">Last studied {daysSince}d ago</span>
-                              )}
                             </div>
                             <Progress value={block.masteryScore * 100} className="h-1.5" />
-                            <div className="flex items-start gap-1.5 text-xs text-muted-foreground bg-muted/40 rounded-md px-2.5 py-2">
-                              <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                              <span className="italic">{hint}</span>
-                            </div>
+                            <div className="flex items-start gap-1.5 text-xs text-muted-foreground bg-muted/40 rounded-md px-2.5 py-2"><Info className="h-3.5 w-3.5 shrink-0 mt-0.5" /><span className="italic">{hint}</span></div>
                           </div>
                         </div>
                         <div className="flex flex-col gap-2 shrink-0">
                           {isThisActive ? (
-                            <Button
-                              className="min-h-[44px] bg-primary text-primary-foreground px-3 text-sm"
-                              onClick={() => stopTimer({ topicId: block.topicId, topicName: block.topicName, durationMinutes: block.durationMinutes, sessionType: block.sessionType })}
-                              data-testid={`button-stop-${i}`}
-                            >
-                              <Square className="h-3.5 w-3.5 mr-1 fill-current" />
-                              Stop & Log
-                            </Button>
+                            <Button className="min-h-[44px] bg-primary text-primary-foreground px-3 text-sm" onClick={() => stopTimer(block)}><Square className="h-3.5 w-3.5 mr-1 fill-current" />Stop & Log</Button>
                           ) : (
-                            <Button
-                              variant="outline"
-                              className="min-h-[44px] px-3 text-sm"
-                              onClick={() => startTimer({ topicId: block.topicId, topicName: block.topicName, sessionType: block.sessionType }, i)}
-                              disabled={hasOtherActive}
-                              data-testid={`button-start-${i}`}
-                            >
-                              <Play className="h-3.5 w-3.5 mr-1 fill-current" />
-                              Start
-                            </Button>
+                            <Button variant="outline" className="min-h-[44px] px-3 text-sm" onClick={() => startTimer(block, i)} disabled={activeTimer !== null}><Play className="h-3.5 w-3.5 mr-1 fill-current" />Start</Button>
                           )}
-                          {!isThisActive && (
-                            <Button
-                              variant="ghost"
-                              className="min-h-[44px] px-3 text-xs text-muted-foreground"
-                              onClick={() => openLog({ topicId: block.topicId, topicName: block.topicName, durationMinutes: block.durationMinutes, sessionType: block.sessionType })}
-                              data-testid={`button-log-block-${i}`}
-                            >
-                              <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-                              Log manually
-                            </Button>
-                          )}
+                          {!isThisActive && <Button variant="ghost" className="min-h-[44px] px-3 text-xs text-muted-foreground" onClick={() => openLog(block)}><CheckCircle2 className="h-3.5 w-3.5 mr-1" />Log manually</Button>}
                         </div>
                       </div>
                     </CardContent>
@@ -377,108 +293,34 @@ export default function Schedule() {
 
       <Dialog open={logOpen} onOpenChange={setLogOpen}>
         <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{selectedBlock ? `Log: ${selectedBlock.topicName}` : "Log Study Session"}</DialogTitle>
-            <DialogDescription>
-              Recording your session updates mastery scores and recalibrates your schedule.
-            </DialogDescription>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>{selectedBlock ? `Log: ${selectedBlock.topicName}` : "Log Study Session"}</DialogTitle><DialogDescription>Recording your session updates mastery scores and recalibrates your schedule.</DialogDescription></DialogHeader>
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-              <FormField
-                control={form.control}
-                name="topicId"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Topic</FormLabel>
-                    <Select onValueChange={(v) => field.onChange(Number(v))} value={field.value ? String(field.value) : ""}>
-                      <FormControl>
-                        <SelectTrigger data-testid="select-topic"><SelectValue placeholder="Select topic" /></SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {topics?.map((t) => <SelectItem key={t.id} value={String(t.id)}>{t.name} — {t.subject}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              <FormField control={form.control} name="topicId" render={({ field }) => (
+                <FormItem><FormLabel>Topic</FormLabel><Select onValueChange={(v) => field.onChange(Number(v))} value={field.value ? String(field.value) : ""}><FormControl><SelectTrigger><SelectValue placeholder="Select topic" /></SelectTrigger></FormControl><SelectContent>{Array.isArray(topics) && topics.map((t) => <SelectItem key={t.id} value={String(t.id)}>{t.name} — {t.subject}</SelectItem>)}</SelectContent></Select><FormMessage /></FormItem>
+              )} />
               <div className="grid grid-cols-2 gap-4">
-                <FormField
-                  control={form.control}
-                  name="sessionType"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Session Type</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-session-type"><SelectValue /></SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="lecture">Lecture</SelectItem>
-                          <SelectItem value="practice">Practice</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="durationMinutes"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Duration (minutes)</FormLabel>
-                      <FormControl>
-                        <Input type="number" min="1" max="480" data-testid="input-duration" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+                <FormField control={form.control} name="sessionType" render={({ field }) => (
+                  <FormItem><FormLabel>Session Type</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent><SelectItem value="lecture">Lecture</SelectItem><SelectItem value="practice">Practice</SelectItem></SelectContent></Select><FormMessage /></FormItem>
+                )} />
+                <FormField control={form.control} name="durationMinutes" render={({ field }) => (
+                  <FormItem><FormLabel>Duration (minutes)</FormLabel><FormControl><Input type="number" {...field} /></FormControl><FormMessage /></FormItem>
+                )} />
               </div>
               {sessionType === "practice" && (
                 <div className="grid grid-cols-2 gap-4">
-                  <FormField
-                    control={form.control}
-                    name="testScore"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Test Score</FormLabel>
-                        <FormControl><Input type="number" min="0" max="100" placeholder="72" data-testid="input-test-score" {...field} /></FormControl>
-                        <FormDescription>Your raw score</FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="testScoreMax"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Max Score</FormLabel>
-                        <FormControl><Input type="number" min="1" placeholder="100" data-testid="input-test-score-max" {...field} /></FormControl>
-                        <FormDescription>Total possible</FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  <FormField control={form.control} name="testScore" render={({ field }) => (
+                    <FormItem><FormLabel>Test Score</FormLabel><FormControl><Input type="number" {...field} /></FormControl><FormDescription>Your raw score</FormDescription><FormMessage /></FormItem>
+                  )} />
+                  <FormField control={form.control} name="testScoreMax" render={({ field }) => (
+                    <FormItem><FormLabel>Max Score</FormLabel><FormControl><Input type="number" {...field} /></FormControl><FormDescription>Total possible</FormDescription><FormMessage /></FormItem>
+                  )} />
                 </div>
               )}
-              <FormField
-                control={form.control}
-                name="notes"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Notes (optional)</FormLabel>
-                    <FormControl><Textarea placeholder="What did you cover? Any blockers?" data-testid="textarea-notes" {...field} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <Button type="submit" className="w-full" disabled={logSession.isPending} data-testid="button-submit-session">
-                {logSession.isPending ? "Logging..." : "Log Session"}
-              </Button>
+              <FormField control={form.control} name="notes" render={({ field }) => (
+                <FormItem><FormLabel>Notes (optional)</FormLabel><FormControl><Textarea placeholder="What did you cover?" {...field} /></FormControl><FormMessage /></FormItem>
+              )} />
+              <Button type="submit" className="w-full" disabled={logSession.isPending}>{logSession.isPending ? "Logging..." : "Log Session"}</Button>
             </form>
           </Form>
         </DialogContent>
