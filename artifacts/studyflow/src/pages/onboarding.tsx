@@ -1,4 +1,4 @@
-import { useGetStudentProfile, useCreateStudentProfile } from "@workspace/api-client-react";
+import { useGetStudentProfile, useCreateStudentProfile, getGetStudentProfileQueryKey } from "@workspace/api-client-react";
 import { useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -98,7 +98,7 @@ export default function Onboarding() {
   const [creatingProgress, setCreatingProgress] = useState(0);
 
   const { data: profile, isLoading: isLoadingProfile } = useGetStudentProfile({
-    query: { retry: false },
+    query: { queryKey: getGetStudentProfileQueryKey(), retry: false },
   });
 
   const createProfile = useCreateStudentProfile();

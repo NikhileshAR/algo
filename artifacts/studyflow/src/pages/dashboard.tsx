@@ -7,6 +7,7 @@ import {
   useGetPriorityTopics,
   useGetTodaySchedule,
   useGetStudentProfile,
+  getGetStudentProfileQueryKey,
   useListTopics,
 } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -203,7 +204,7 @@ export default function Dashboard() {
   const [, setLocation] = useLocation();
   const [checklistDismissed, setChecklistDismissed] = useState(() => localStorage.getItem("sf_checklist_dismissed") === "1");
 
-  const { data: profile, isError: profileError, isLoading: profileLoading } = useGetStudentProfile({ query: { retry: false } });
+  const { data: profile, isError: profileError, isLoading: profileLoading } = useGetStudentProfile({ query: { queryKey: getGetStudentProfileQueryKey(), retry: false } });
   const { data: summary, isLoading: summaryLoading } = useGetDashboardSummary();
   const { data: weeklyProgress, isLoading: weeklyLoading } = useGetWeeklyProgress();
   const { data: priorityTopics, isLoading: topicsLoading } = useGetPriorityTopics();
