@@ -241,11 +241,11 @@ export default function Dashboard() {
   const masteryPercent = Math.round((summary?.averageMastery ?? 0) * 100);
   const completionPercent = summary && summary.totalTopics > 0 ? Math.round((summary.completedTopics / summary.totalTopics) * 100) : 0;
 
-  const chartData = weeklyProgress?.map((d) => ({
+  const chartData = Array.isArray(weeklyProgress) ? weeklyProgress.map((d) => ({
     date: new Date(d.date).toLocaleDateString("en-US", { weekday: "short" }),
     studied: Math.round(d.studiedHours * 10) / 10,
     scheduled: Math.round(d.scheduledHours * 10) / 10,
-  })) ?? [];
+  })) : [];
 
   const topicsCount = allTopics?.length ?? 0;
   const hasSchedule = (schedule?.blocks?.length ?? 0) > 0;
