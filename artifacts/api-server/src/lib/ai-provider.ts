@@ -2,6 +2,8 @@ import { z } from "zod";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { logger } from "./logger";
 
+const OPENROUTER_DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
+
 export interface LLMProvider {
   generateJSON<T>(
     systemPrompt: string,
@@ -94,12 +96,66 @@ class OllamaProvider implements LLMProvider {
   }
 }
 
+class OpenRouterProvider implements LLMProvider {
+  private apiKey: string;
+  private modelName: string;
+
+  constructor(apiKey: string, modelName = OPENROUTER_DEFAULT_MODEL) {
+    this.apiKey = apiKey;
+    this.modelName = modelName;
+  }
+
+  async generateJSON<T>(
+    systemPrompt: string,
+    userPrompt: string,
+    schema: z.ZodType<T>,
+    retries = 2,
+  ): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "authorization": `Bearer ${this.apiKey}`,
+            "http-referer": "https://studyflow.app",
+            "x-title": "StudyFlow",
+          },
+          body: JSON.stringify({
+            model: this.modelName,
+            response_format: { type: "json_object" },
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userPrompt },
+            ],
+          }),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          throw new Error(`OpenRouter request failed: ${response.status} ${body}`);
+        }
+        const data = (await response.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        };
+        const content = data.choices?.[0]?.message?.content ?? "{}";
+        const raw = JSON.parse(content);
+        return schema.parse(raw);
+      } catch (err) {
+        lastError = err;
+        logger.warn({ err, attempt }, "OpenRouter response parse/validation failed, retrying");
+      }
+    }
+    throw lastError;
+  }
+}
+
 let _provider: LLMProvider | null = null;
 
 export function getAIProvider(): LLMProvider {
   if (_provider) return _provider;
 
-  const providerName = (process.env.AI_PROVIDER ?? "gemini").toLowerCase();
+  const providerName = (process.env.AI_PROVIDER ?? "openrouter").toLowerCase();
 
   if (providerName === "ollama") {
     _provider = new OllamaProvider(
@@ -109,13 +165,29 @@ export function getAIProvider(): LLMProvider {
     return _provider;
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  if (providerName === "gemini") {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error(
+        "GEMINI_API_KEY environment variable is required when AI_PROVIDER=gemini. " +
+          "Set it in your .env file or switch to AI_PROVIDER=openrouter.",
+      );
+    }
+    _provider = new GeminiProvider(apiKey, process.env.GEMINI_MODEL ?? "gemini-1.5-flash");
+    return _provider;
+  }
+
+  // Default: openrouter
+  const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "GEMINI_API_KEY environment variable is required when AI_PROVIDER=gemini (the default). " +
-        "Set it in your environment or switch to AI_PROVIDER=ollama for local inference.",
+      "OPENROUTER_API_KEY environment variable is required. " +
+        "Set it in your .env file.",
     );
   }
-  _provider = new GeminiProvider(apiKey, process.env.GEMINI_MODEL ?? "gemini-1.5-flash");
+  _provider = new OpenRouterProvider(
+    apiKey,
+    process.env.OPENROUTER_MODEL ?? OPENROUTER_DEFAULT_MODEL,
+  );
   return _provider;
 }

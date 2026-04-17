@@ -108,11 +108,15 @@ router.post("/ai/onboarding-enrich", async (req, res): Promise<void> => {
 });
 
 router.get("/ai/status", async (_req, res): Promise<void> => {
-  const provider = process.env.AI_PROVIDER ?? "gemini";
-  const configured =
-    provider === "ollama"
-      ? true
-      : Boolean(process.env.GEMINI_API_KEY);
+  const provider = process.env.AI_PROVIDER ?? "openrouter";
+  let configured: boolean;
+  if (provider === "ollama") {
+    configured = true;
+  } else if (provider === "gemini") {
+    configured = Boolean(process.env.GEMINI_API_KEY);
+  } else {
+    configured = Boolean(process.env.OPENROUTER_API_KEY);
+  }
   res.json({ provider, configured });
 });
 
