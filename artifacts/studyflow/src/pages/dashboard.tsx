@@ -7,6 +7,7 @@ import {
   useGetPriorityTopics,
   useGetTodaySchedule,
   useGetStudentProfile,
+  getGetStudentProfileQueryKey,
   useListTopics,
 } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -203,7 +204,7 @@ export default function Dashboard() {
   const [, setLocation] = useLocation();
   const [checklistDismissed, setChecklistDismissed] = useState(() => localStorage.getItem("sf_checklist_dismissed") === "1");
 
-  const { data: profile, isError: profileError, isLoading: profileLoading } = useGetStudentProfile({ query: { retry: false } });
+  const { data: profile, isError: profileError, isLoading: profileLoading } = useGetStudentProfile({ query: { queryKey: getGetStudentProfileQueryKey(), retry: false } });
   const { data: summary, isLoading: summaryLoading } = useGetDashboardSummary();
   const { data: weeklyProgress, isLoading: weeklyLoading } = useGetWeeklyProgress();
   const { data: priorityTopics, isLoading: topicsLoading } = useGetPriorityTopics();
@@ -248,7 +249,10 @@ export default function Dashboard() {
   })) : [];
 
   const topicsCount = allTopics?.length ?? 0;
-  const hasSchedule = (schedule?.blocks?.length ?? 0) > 0;
+  const scheduleBlocks = Array.isArray(schedule?.blocks) ? schedule.blocks : [];
+  const scheduleHours = typeof schedule?.scheduledHours === "number" ? schedule.scheduledHours : 0;
+  const scheduleForInsights = schedule && Array.isArray(schedule.blocks) ? schedule : null;
+  const hasSchedule = scheduleBlocks.length > 0;
   const hasStudied = (summary?.weeklyStudiedHours ?? 0) > 0;
   const showChecklist = !checklistDismissed && (!hasStudied || topicsCount < 3 || !hasSchedule);
 
@@ -284,7 +288,7 @@ export default function Dashboard() {
       </div>
 
       {summary && !summaryLoading && (
-        <NarrativeInsights summary={summary} schedule={schedule} topicsCount={topicsCount} velocity={velocity} studyPatterns={studyPatterns} />
+        <NarrativeInsights summary={summary} schedule={scheduleForInsights} topicsCount={topicsCount} velocity={velocity} studyPatterns={studyPatterns} />
       )}
 
       {velocity && velocity.length > 0 && (
@@ -371,15 +375,15 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {schedule && schedule.blocks.length > 0 && (
+      {hasSchedule && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Today's Schedule</CardTitle>
-            <CardDescription>{schedule.scheduledHours.toFixed(1)}h planned — {schedule.blocks.length} blocks</CardDescription>
+            <CardDescription>{scheduleHours.toFixed(1)}h planned — {scheduleBlocks.length} blocks</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {schedule.blocks.map((block, i) => (
+              {scheduleBlocks.map((block, i) => (
                 <div key={i} className="flex items-center justify-between rounded-lg border px-3 py-2 bg-muted/30" data-testid={`schedule-block-${i}`}>
                   <div className="flex items-center gap-3">
                     <Clock className="h-4 w-4 text-muted-foreground shrink-0" />

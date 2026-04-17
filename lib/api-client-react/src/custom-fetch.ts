@@ -15,8 +15,20 @@ const DEFAULT_JSON_ACCEPT = "application/json, application/problem+json";
 // Module-level configuration
 // ---------------------------------------------------------------------------
 
-let _baseUrl: string | null = null;
+const DEFAULT_BASE_URL = "http://localhost:8080";
+let _baseUrl: string | null = DEFAULT_BASE_URL.replace(/\/+$/, "");
 let _authTokenGetter: AuthTokenGetter | null = null;
+
+function getRuntimeBaseUrl(): string | null {
+  if (typeof globalThis === "undefined") return null;
+  const candidate = (globalThis as { __STUDYFLOW_API_BASE_URL__?: unknown }).__STUDYFLOW_API_BASE_URL__;
+  if (typeof candidate !== "string") return null;
+  const trimmed = candidate.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+const runtimeBaseUrl = getRuntimeBaseUrl();
+if (runtimeBaseUrl) _baseUrl = runtimeBaseUrl.replace(/\/+$/, "");
 
 /**
  * Set a base URL that is prepended to every relative request URL

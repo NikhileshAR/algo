@@ -221,6 +221,10 @@ export default function Schedule() {
   }
 
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  const scheduleBlocks = Array.isArray(schedule?.blocks) ? schedule.blocks : [];
+  const scheduleHours = typeof schedule?.scheduledHours === "number" ? schedule.scheduledHours : 0;
+  const daysUntilExam = typeof schedule?.daysUntilExam === "number" ? schedule.daysUntilExam : 0;
+  const hasSchedule = Boolean(schedule);
 
   return (
     <div className="space-y-6" data-testid="schedule-page">
@@ -258,37 +262,37 @@ export default function Schedule() {
 
       {isLoading ? (
         <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-24" />)}</div>
-      ) : schedule ? (
+      ) : hasSchedule ? (
         <>
           <div className="grid gap-4 md:grid-cols-3">
             <Card>
               <CardContent className="pt-4">
                 <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><Clock className="h-4 w-4" />Scheduled today</div>
-                <p className="text-2xl font-bold">{schedule.scheduledHours.toFixed(1)}h</p>
+                <p className="text-2xl font-bold">{scheduleHours.toFixed(1)}h</p>
               </CardContent>
             </Card>
             <Card>
               <CardContent className="pt-4">
                 <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><BookOpen className="h-4 w-4" />Study blocks</div>
-                <p className="text-2xl font-bold">{schedule.blocks.length}</p>
+                <p className="text-2xl font-bold">{scheduleBlocks.length}</p>
               </CardContent>
             </Card>
             <Card>
               <CardContent className="pt-4">
                 <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><Target className="h-4 w-4" />Days until exam</div>
-                <p className="text-2xl font-bold">{schedule.daysUntilExam}</p>
+                <p className="text-2xl font-bold">{daysUntilExam}</p>
               </CardContent>
             </Card>
           </div>
 
-          {schedule.isReset && (
+          {schedule?.isReset && (
             <div className="rounded-lg border bg-accent/50 px-4 py-3 text-sm text-accent-foreground">
               Psychological reset applied — backlog cleared and schedule rebuilt from current position.
             </div>
           )}
 
           <div className="space-y-3">
-            {schedule.blocks.length === 0 ? (
+            {scheduleBlocks.length === 0 ? (
               <Card>
                 <CardContent className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
                   <BookOpen className="h-10 w-10 mb-3 opacity-40" />
@@ -297,7 +301,7 @@ export default function Schedule() {
                 </CardContent>
               </Card>
             ) : (
-              schedule.blocks.map((block, i) => {
+              scheduleBlocks.map((block, i) => {
                 const daysSince = getDaysSinceStudied(block.topicId);
                 const hint = getSessionHint(block.masteryScore, block.sessionType, daysSince);
                 const isThisActive = activeTimer?.blockIndex === i;

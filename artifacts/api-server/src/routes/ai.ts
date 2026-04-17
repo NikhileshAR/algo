@@ -9,7 +9,7 @@ import {
 import { getAIProvider } from "../lib/ai-provider";
 import { logger } from "../lib/logger";
 
-const router: IRouter = Router();
+export const aiRouter: IRouter = Router();
 
 const ONBOARDING_SYSTEM_PROMPT = `You are an expert academic coach helping a student prepare for a high-stakes exam.
 You will receive the student's profile and study preferences, and must return a structured JSON study plan.
@@ -64,7 +64,7 @@ function daysUntil(examDate: string): number {
   return Math.max(Math.ceil((exam.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)), 0);
 }
 
-router.post("/ai/onboarding-enrich", async (req, res): Promise<void> => {
+aiRouter.post("/ai/onboarding-enrich", async (req, res): Promise<void> => {
   const parsed = AiOnboardingEnrichBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -107,17 +107,7 @@ router.post("/ai/onboarding-enrich", async (req, res): Promise<void> => {
   res.json(enrichment);
 });
 
-router.get("/ai/status", async (_req, res): Promise<void> => {
-  const provider = process.env.AI_PROVIDER ?? "openrouter";
-  let configured: boolean;
-  if (provider === "ollama") {
-    configured = true;
-  } else if (provider === "gemini") {
-    configured = Boolean(process.env.GEMINI_API_KEY);
-  } else {
-    configured = Boolean(process.env.OPENROUTER_API_KEY);
-  }
-  res.json({ provider, configured });
+aiRouter.get("/ai/status", async (_req, res): Promise<void> => {
+  const configured = Boolean(process.env.OPENROUTER_API_KEY);
+  res.json({ provider: "openrouter", configured });
 });
-
-export default router;

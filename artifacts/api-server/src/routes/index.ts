@@ -6,7 +6,7 @@ import scheduleRouter from "./schedule";
 import sessionsRouter from "./sessions";
 import dashboardRouter from "./dashboard";
 import analyticsRouter from "./analytics";
-import aiRouter from "./ai";
+import { aiRouter } from "./ai";
 
 const router: IRouter = Router();
 
