@@ -20,7 +20,7 @@ Passive study tracking for StudyFlow. The extension watches which websites you v
 ## Setup
 
 1. Click the extension icon → Settings (⚙)
-2. Enter your **StudyFlow API URL** (e.g. `https://your-app.replit.dev`)
+2. Enter your **StudyFlow API URL** (e.g. `http://localhost:8080`)
 3. Click **Test connection** — it should show "✓ Connected"
 4. Under **Domain → Topic Mapping**, add the study sites you use:
    - Domain: `khanacademy.org`
