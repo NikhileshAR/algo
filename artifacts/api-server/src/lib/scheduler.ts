@@ -21,6 +21,8 @@ function parseDeps(prerequisites: string): number[] {
   }
 }
 
+const MIN_RETENTION_STABILITY = 0.1;
+
 function daysSinceStudied(lastStudiedAt: Date | null): number {
   if (!lastStudiedAt) return 999;
   const diff = Date.now() - new Date(lastStudiedAt).getTime();
@@ -33,7 +35,7 @@ function daysSinceStudied(lastStudiedAt: Date | null): number {
  */
 function forgettingRetention(mastery: number, days: number, decayConstant = 1): number {
   const stability = 3 + mastery * 18;
-  return Math.exp((-days / Math.max(stability, 0.1)) * decayConstant);
+  return Math.exp((-days / Math.max(stability, MIN_RETENTION_STABILITY)) * decayConstant);
 }
 
 export type SchedulerMode = "adaptive" | "static" | "random";
@@ -300,7 +302,7 @@ export function buildSchedulePlan(params: {
     const randomPriority = deterministicHash(`${params.dateSeed}:${topic.id}`);
     const staticPriority = staticOrderIndex.has(topic.id)
       ? 1 / (1 + (staticOrderIndex.get(topic.id) ?? Number.MAX_SAFE_INTEGER))
-      : adaptive.priority;
+      : 0;
 
     let modePriority = adaptive.priority;
     if (params.mode === "random") {

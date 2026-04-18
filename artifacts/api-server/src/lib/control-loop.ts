@@ -70,6 +70,8 @@ const LECTURE_QUALITY_SIGNAL = 0.58;
 const BASE_COMPLIANCE = 0.65;
 const COMPLIANCE_AMPLITUDE = 0.12;
 const COMPLIANCE_CYCLE_DAYS = 14;
+const TOPIC_DIFFICULTY_SCALE_MAX = 5;
+const MS_PER_DAY = 86_400_000;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -132,7 +134,7 @@ function extractHighPriorityTopicIds(topics: TopicRow[]): Set<number> {
       topicId: topic.id,
       score: topic.priorityScore > 0
         ? topic.priorityScore
-        : topic.estimatedHours * (topic.difficultyLevel / 5) * (1 - topic.masteryScore),
+        : topic.estimatedHours * (topic.difficultyLevel / TOPIC_DIFFICULTY_SCALE_MAX) * (1 - topic.masteryScore),
     }))
     .sort((a, b) => b.score - a.score);
 
@@ -603,11 +605,11 @@ export async function getCurrentControlSnapshot(): Promise<{
 
   const gap = await computePerformanceGap(14);
   const calibration = calibrateParameters({ profile, gap });
-  const daysLeft = Math.max(1, Math.ceil((new Date(profile.examDate).getTime() - Date.now()) / 86_400_000));
+  const normalizedDaysLeft = Math.max(1, Math.ceil((new Date(profile.examDate).getTime() - Date.now()) / MS_PER_DAY));
   const forecast = runForwardForecast({
     profile,
     topics,
-    daysUntilExam: daysLeft,
+    daysUntilExam: normalizedDaysLeft,
     tuning: calibration.tuning,
   });
 
