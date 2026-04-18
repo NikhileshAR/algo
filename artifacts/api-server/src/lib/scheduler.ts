@@ -21,7 +21,7 @@ function parseDeps(prerequisites: string): number[] {
   }
 }
 
-const MIN_RETENTION_STABILITY = 0.1;
+const MIN_DECAY_STABILITY = 0.1;
 
 function daysSinceStudied(lastStudiedAt: Date | null): number {
   if (!lastStudiedAt) return 999;
@@ -35,7 +35,7 @@ function daysSinceStudied(lastStudiedAt: Date | null): number {
  */
 function forgettingRetention(mastery: number, days: number, decayConstant = 1): number {
   const stability = 3 + mastery * 18;
-  return Math.exp((-days / Math.max(stability, MIN_RETENTION_STABILITY)) * decayConstant);
+  return Math.exp((-days / Math.max(stability, MIN_DECAY_STABILITY)) * decayConstant);
 }
 
 export type SchedulerMode = "adaptive" | "static" | "random";
@@ -75,7 +75,8 @@ export interface BlockExplanation {
 }
 
 const TARGET_ACTIVE_PRACTICE_RATIO = 0.5;
-const PRACTICE_IMBALANCE_THRESHOLD = 0.35;
+// Imbalance pressure starts when practice ratio falls below this floor.
+const LOW_PRACTICE_RATIO_THRESHOLD = 0.35;
 
 export interface PlannerRiskSignal {
   backlogRisk: number;
@@ -161,14 +162,15 @@ function computePriorityBreakdown(
   // Effective mastery is modeled as mastery attenuated by retention (m * R).
   // Priority pressure then uses the complementary gap: 1 - effectiveMastery.
   const lowMastery = clamp(1 - topic.masteryScore * retention, 0, 1);
-  const weightage = clamp(daysUntilExam > 0 ? topic.estimatedHours / daysUntilExam : topic.estimatedHours, 0, 10);
+  const urgency = daysUntilExam > 0 ? 1 / daysUntilExam : 1;
+  const weightage = clamp(topic.estimatedHours * urgency, 0, 10);
   const difficulty = clamp(topic.difficultyLevel / 5, 0.2, 1);
   const unlockedDownstreamTopics = countUnlockedDownstream(topic.id, graph);
   const dependencyPressure = clamp(unlockedDownstreamTopics / 5, 0, 1);
   const decayPressure = clamp(1 - retention, 0, 1);
   const practicePressure = clamp(
-    profile.activePracticeRatio < PRACTICE_IMBALANCE_THRESHOLD
-      ? (PRACTICE_IMBALANCE_THRESHOLD - profile.activePracticeRatio) / PRACTICE_IMBALANCE_THRESHOLD
+    profile.activePracticeRatio < LOW_PRACTICE_RATIO_THRESHOLD
+      ? (LOW_PRACTICE_RATIO_THRESHOLD - profile.activePracticeRatio) / LOW_PRACTICE_RATIO_THRESHOLD
       : 0,
     0,
     1,

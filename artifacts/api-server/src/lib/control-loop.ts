@@ -64,6 +64,7 @@ export interface CalibrationResult {
   detectedBias: "balanced" | "overestimation" | "underestimation";
 }
 
+// Daily fractional mastery decay used in forward simulation before session gains.
 const DAILY_DECAY_RATE = 0.015;
 const PRACTICE_QUALITY_SIGNAL = 0.74;
 const LECTURE_QUALITY_SIGNAL = 0.58;
@@ -76,6 +77,11 @@ const DEVIATION_UNDER_THRESHOLD = -0.12;
 const COMPLETION_UNDER_THRESHOLD = -0.08;
 const DEVIATION_OVER_THRESHOLD = 0.12;
 const COMPLETION_OVER_THRESHOLD = 0.08;
+const BASE_LEARNING_RATE = 0.14;
+const CONFIDENCE_LEARNING_BONUS = 0.08;
+const DISCIPLINE_GROWTH_BASELINE = 0.45;
+const MIN_GROWTH_SIGNAL = -0.2;
+const MAX_GROWTH_SIGNAL = 0.35;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -128,7 +134,8 @@ function decayTopics(topics: TopicRow[], tuning: SchedulerTuning): void {
 
 function applyPracticeGain(topic: TopicRow, sessionType: "lecture" | "practice", completedRatio: number): void {
   const qualitySignal = sessionType === "practice" ? PRACTICE_QUALITY_SIGNAL : LECTURE_QUALITY_SIGNAL;
-  const alpha = 0.14 + topic.confidenceScore * 0.08;
+  // Learning rate alpha ranges roughly from 0.14 to 0.22 as confidence grows.
+  const alpha = BASE_LEARNING_RATE + topic.confidenceScore * CONFIDENCE_LEARNING_BONUS;
   const delta = alpha * completedRatio * (qualitySignal - topic.masteryScore);
   topic.masteryScore = clamp(topic.masteryScore + delta, 0, 1);
   topic.confidenceScore = clamp(topic.confidenceScore + 0.03 * completedRatio, 0, 1);
@@ -230,7 +237,12 @@ function runSingleModeSimulation(params: {
     const practiceRatioToday = studiedMinutes > 0 ? practicedMinutes / studiedMinutes : 0;
     profile.activePracticeRatio = clamp(profile.activePracticeRatio * 0.85 + practiceRatioToday * 0.15, 0, 1);
 
-    const growthSignal = clamp(deterministicDiscipline - 0.45, -0.2, 0.35);
+    // Capacity growth turns positive above the baseline discipline, and negative below it.
+    const growthSignal = clamp(
+      deterministicDiscipline - DISCIPLINE_GROWTH_BASELINE,
+      MIN_GROWTH_SIGNAL,
+      MAX_GROWTH_SIGNAL,
+    );
     const grownCapacity = profile.capacityScore * (1 + 0.03 * params.tuning.growthRateMultiplier * growthSignal);
     profile.capacityScore = clamp(
       params.tuning.capacitySmoothing * profile.capacityScore + (1 - params.tuning.capacitySmoothing) * grownCapacity,
@@ -441,7 +453,9 @@ export async function computePerformanceGap(daysLookback = 14): Promise<Performa
         return sum + clamp(normalized, 0, 1);
       }, 0) / scoredSessions.length
     : 0.5;
-  const efficiencyOfTimeSpent = actualHours > 0 ? clamp((quality * scoredSessions.length) / Math.max(actualHours, 1), 0, 1) : 0;
+  const efficiencyOfTimeSpent = actualHours > 0
+    ? clamp((quality * scoredSessions.length) / actualHours, 0, 1)
+    : 0;
 
   return {
     expectedHours: Math.round(expectedHours * 1000) / 1000,
