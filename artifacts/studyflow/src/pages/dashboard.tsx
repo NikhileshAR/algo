@@ -14,8 +14,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ArrowRight, Clock3, CircleCheck, PlayCircle, AlertTriangle, RefreshCw, Sparkles } from "lucide-react";
-import { runValidationPipeline } from "@/lib/local-db/validation";
 import { scheduleEndpointForMode, useValidationMode } from "@/lib/validation-mode";
+import { syncDailyValidationFromApi } from "@/lib/validation-sync";
 
 type RiskSignal = {
   backlogRisk: number;
@@ -137,27 +137,15 @@ export default function Dashboard() {
   useEffect(() => {
     if (!profile || !scheduleWithControl || !sessions || !topics) return;
     const date = toIsoDay();
-    const actualHours = sessions
-      .filter((s) => isIsoDayMatch(s.studiedAt, date))
-      .reduce((sum, s) => sum + s.durationMinutes / 60, 0);
-    const sessionsCompleted = sessions.filter((s) => isIsoDayMatch(s.studiedAt, date)).length;
-    const weightedNow = topics.length > 0
-      ? topics.reduce((sum, topic) => sum + topic.masteryScore * Math.max(topic.priorityScore, 0.01), 0) /
-        topics.reduce((sum, topic) => sum + Math.max(topic.priorityScore, 0.01), 0)
-      : 0;
-    void runValidationPipeline({
+    void syncDailyValidationFromApi({
       mode,
       date,
-      plannedHours: scheduleWithControl.scheduledHours ?? 0,
-      actualHours,
-      sessionsCompleted,
-      resetTriggered: Boolean(scheduleWithControl.isReset),
-      disciplineScore: profile.disciplineScore,
-      capacityEstimate: profile.capacityScore,
-      highPriorityProgress: weightedNow,
-      backlogLevel: 1 - completion / 100,
+      sessions,
+      schedule: scheduleWithControl,
+      profile,
+      topics,
     });
-  }, [mode, profile, scheduleWithControl, sessions, topics, completion]);
+  }, [mode, profile, scheduleWithControl, sessions, topics]);
 
   const paceBehind =
     Boolean(scheduleWithControl?.control?.forecast?.riskSignal?.fallingBehind) ||

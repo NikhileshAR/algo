@@ -3,9 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useGetStudentProfile, useListSessions, useListTopics, type DailySchedule } from "@workspace/api-client-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getValidationRepo, runValidationPipeline } from "@/lib/local-db/validation";
+import { getValidationRepo } from "@/lib/local-db/validation";
 import { scheduleEndpointForMode, useValidationMode } from "@/lib/validation-mode";
 import type { WeeklyValidationSummaryRecord } from "@/lib/local-db/schema";
+import { syncDailyValidationFromApi } from "@/lib/validation-sync";
 
 function isoDay(date = new Date()): string {
   return date.toISOString().split("T")[0];
@@ -42,37 +43,18 @@ export default function Review() {
 
   useEffect(() => {
     if (!profile || !topics || !sessions || !schedule) return;
-    const actualHours = sessions
-      .filter((s) => typeof s.studiedAt === "string" && s.studiedAt.startsWith(today))
-      .reduce((sum, s) => sum + s.durationMinutes / 60, 0);
-    const sessionsCompleted = sessions.filter((s) => typeof s.studiedAt === "string" && s.studiedAt.startsWith(today)).length;
-    const weightedNow = topics.length > 0
-      ? topics.reduce((sum, topic) => sum + topic.masteryScore * Math.max(topic.priorityScore, 0.01), 0) /
-        topics.reduce((sum, topic) => sum + Math.max(topic.priorityScore, 0.01), 0)
-      : 0;
-    const backlogLevel = schedule.scheduledHours > 0
-      ? Math.max(0, Math.min(1, 1 - actualHours / schedule.scheduledHours))
-      : 0;
-    void runValidationPipeline({
+    void syncDailyValidationFromApi({
       mode,
       date: today,
-      plannedHours: schedule.scheduledHours ?? 0,
-      actualHours,
-      sessionsCompleted,
-      resetTriggered: Boolean(schedule.isReset),
-      disciplineScore: profile.disciplineScore,
-      capacityEstimate: profile.capacityScore,
-      highPriorityProgress: weightedNow,
-      backlogLevel,
+      sessions,
+      schedule,
+      profile,
+      topics,
     }).then(async () => {
       const rows = await getValidationRepo().weeklySummaries();
       setSummaries(rows);
     });
   }, [mode, profile, topics, sessions, schedule, today]);
-
-  useEffect(() => {
-    void getValidationRepo().weeklySummaries().then((rows) => setSummaries(rows));
-  }, [mode]);
 
   const modeSummaries = useMemo(
     () => summaries.filter((s) => s.mode === mode).sort((a, b) => b.week_end.localeCompare(a.week_end)),

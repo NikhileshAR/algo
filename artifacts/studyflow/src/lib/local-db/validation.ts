@@ -1,4 +1,4 @@
-import { computeMomentumState, loadMomentumData, type MomentumState } from "@/lib/execution-engine";
+import { computeMomentumState, loadMomentumData } from "@/lib/execution-engine";
 import {
   getDb,
   VALIDATION_DAILY_STORE,
@@ -92,16 +92,23 @@ function avg(values: number[]): number {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+// Need at least 4 samples to split into two periods for directional trend checks.
+const MIN_ROWS_FOR_TREND = 4;
+// 0.15h (~9 minutes) separates meaningful movement from day-level noise.
+const CAPACITY_TREND_THRESHOLD_HOURS = 0.15;
+// 3+ inactive days is treated as behavioral drop-off for this phase.
+const DROPOFF_INACTIVITY_THRESHOLD_DAYS = 3;
+
 function capacityTrend(rows: DailyOutcomeSnapshotRecord[]): "upward" | "flat" | "declining" {
-  if (rows.length < 4) return "flat";
+  if (rows.length < MIN_ROWS_FOR_TREND) return "flat";
   const half = Math.floor(rows.length / 2);
   const first = rows.slice(0, half);
   const second = rows.slice(half);
   const firstSignal = avg(first.map((r) => (r.actual_hours + r.capacity_estimate) / 2));
   const secondSignal = avg(second.map((r) => (r.actual_hours + r.capacity_estimate) / 2));
   const delta = secondSignal - firstSignal;
-  if (delta > 0.15) return "upward";
-  if (delta < -0.15) return "declining";
+  if (delta > CAPACITY_TREND_THRESHOLD_HOURS) return "upward";
+  if (delta < -CAPACITY_TREND_THRESHOLD_HOURS) return "declining";
   return "flat";
 }
 
@@ -251,16 +258,17 @@ export async function runValidationPipeline(params: {
   const repo = getValidationRepo();
   const date = params.date ?? toDay();
   const events = await repo.executionEventsForDay(params.mode, date);
-  const started = events.filter((e) => e.type === "started").length;
-  const interrupted = events.filter((e) => e.type === "interrupted").length;
+  const startedCount = events.filter((e) => e.type === "started").length;
+  const interruptedCount = events.filter((e) => e.type === "interrupted").length;
   const momentumData = loadMomentumData(date);
+  // Momentum state is stored per day so validation can correlate behavioral
+  // continuity/breaks with completion and recovery outcomes.
   const momentum = computeMomentumState(
     momentumData.consecutiveCompleted,
     momentumData.lastWasInterrupted,
-  ) as MomentumState;
-  const completionRate = started > 0
-    ? clamp(params.sessionsCompleted / started)
-    : (params.plannedHours > 0 ? clamp(params.actualHours / params.plannedHours) : 0);
+  );
+  const fallbackCompletionRate = params.plannedHours > 0 ? clamp(params.actualHours / params.plannedHours) : 0;
+  const completionRate = startedCount > 0 ? clamp(params.sessionsCompleted / startedCount) : fallbackCompletionRate;
 
   await repo.appendDailySnapshot({
     mode: params.mode,
@@ -269,8 +277,8 @@ export async function runValidationPipeline(params: {
     actual_hours: round(params.actualHours, 2),
     completion_rate: round(completionRate),
     sessions_completed: params.sessionsCompleted,
-    sessions_started: started,
-    interruptions: interrupted,
+    sessions_started: startedCount,
+    interruptions: interruptedCount,
     reset_triggered: params.resetTriggered,
     momentum_state: momentum,
     discipline_score: round(params.disciplineScore),
@@ -286,7 +294,7 @@ export async function runValidationPipeline(params: {
 
   const totalHours = weekRows.reduce((sum, row) => sum + row.actual_hours, 0);
   const totalCompleted = weekRows.reduce((sum, row) => sum + row.sessions_completed, 0);
-  const totalStarted = weekRows.reduce((sum, row) => sum + row.sessions_started, 0);
+  const totalStartedCount = weekRows.reduce((sum, row) => sum + row.sessions_started, 0);
   const activeDays = weekRows.filter((row) => row.actual_hours > 0 || row.sessions_completed > 0).length;
   const avgSessionCompletionPct = avg(
     weekRows.map((row) => (row.sessions_started > 0 ? row.sessions_completed / row.sessions_started : 0)),
@@ -305,7 +313,7 @@ export async function runValidationPipeline(params: {
     average_session_completion_pct: round(avgSessionCompletionPct),
     resets_triggered: resetCount,
     recovery_after_reset_days: resetRecovery,
-    completion_rate_metric: totalStarted > 0 ? round(totalCompleted / totalStarted) : 0,
+    completion_rate_metric: totalStartedCount > 0 ? round(totalCompleted / totalStartedCount) : 0,
     effective_study_hours: round(totalHours, 2),
     recovery_after_failure_days: failureRecovery,
     high_priority_progress: params.highPriorityProgress !== null ? round(params.highPriorityProgress) : null,
@@ -335,7 +343,7 @@ export async function runValidationPipeline(params: {
   const lastActive = [...snapshots].reverse().find((row) => row.actual_hours > 0 || row.sessions_completed > 0);
   if (lastActive) {
     const inactivityDays = dayDiff(lastActive.date, date);
-    if (inactivityDays >= 3) {
+    if (inactivityDays >= DROPOFF_INACTIVITY_THRESHOLD_DAYS) {
       await repo.appendDropoff({
         mode: params.mode,
         inactivity_days: inactivityDays,

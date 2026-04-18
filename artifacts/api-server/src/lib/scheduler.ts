@@ -77,6 +77,7 @@ export interface BlockExplanation {
 const TARGET_ACTIVE_PRACTICE_RATIO = 0.5;
 // Imbalance pressure starts when practice ratio falls below this floor.
 const LOW_PRACTICE_RATIO_THRESHOLD = 0.35;
+const BASELINE_SESSION_MINUTES = 60;
 
 export interface PlannerRiskSignal {
   backlogRisk: number;
@@ -244,6 +245,8 @@ function baselineRank(
   if (rank === undefined) {
     return 0;
   }
+  // Converts a strict sequential rank into a deterministic descending score
+  // while preserving order and avoiding ties.
   return 1 / (1 + rank);
 }
 
@@ -294,6 +297,8 @@ export function buildSchedulePlan(params: {
     ? "none"
     : (params.forceIntervention ?? riskSignal.intervention);
 
+  // Baseline mode intentionally holds a fixed daily load to provide a clean
+  // comparison condition against adaptive scheduling in validation experiments.
   const baseHours = params.mode === "baseline"
     ? Math.max(profile.dailyTargetHours, 0)
     : geometricCapacity(profile.capacityScore, profile.disciplineScore) * tuning.growthRateMultiplier;
@@ -324,10 +329,7 @@ export function buildSchedulePlan(params: {
 
     const adaptive = computePriorityBreakdown(topic, profile, days, tuning, graph);
     const randomPriority = deterministicHash(`${params.dateSeed}:${topic.id}`);
-    const staticRank = staticOrderIndex.get(topic.id);
-    const staticPriority = staticRank !== undefined
-      ? 1 / (1 + staticRank)
-      : 0;
+    const staticPriority = baselineRank(topic.id, staticOrderIndex);
     const baselinePriority = baselineRank(topic.id, staticOrderIndex);
 
     let modePriority = adaptive.priority;
@@ -366,7 +368,7 @@ export function buildSchedulePlan(params: {
       : (profile.activePracticeRatio >= 0.5 && row.topic.masteryScore > 0.3 ? "practice" : "lecture");
 
     const baseMinutes = params.mode === "baseline"
-      ? Math.min(60, totalMinutes - usedMinutes)
+      ? Math.min(BASELINE_SESSION_MINUTES, totalMinutes - usedMinutes)
       : Math.min(
         Math.round(Math.min(row.topic.estimatedHours * 60, 90)),
         totalMinutes - usedMinutes,

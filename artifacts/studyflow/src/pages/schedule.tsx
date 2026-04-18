@@ -205,7 +205,7 @@ export default function Schedule() {
     const today = new Date().toISOString().split("T")[0];
     void syncSchedulerTelemetryInput(today).finally(() => {
       recalculate.mutate(undefined, {
-          onSuccess: () => {
+        onSuccess: () => {
           queryClient.invalidateQueries({ queryKey: ["schedule", "today", mode] });
           queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
           toast({ title: "Schedule recalculated", description: "Your plan has been updated based on your telemetry + current state." });

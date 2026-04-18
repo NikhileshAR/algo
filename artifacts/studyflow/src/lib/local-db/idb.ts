@@ -1,6 +1,7 @@
 import type { TelemetryEvent } from "./schema";
 
 const DB_NAME = "studyflow-local";
+// v3 adds append-only validation stores for Phase 7 real-user validation.
 const DB_VERSION = 3;
 const TELEMETRY_STORE = "telemetry_events";
 const MASTERY_STORE = "topic_mastery_states";
