@@ -1,8 +1,10 @@
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useMemo } from "react";
+import { Link, useLocation } from "wouter";
 import {
   useGetTodaySchedule,
   useRecalculateSchedule,
   useLogSession,
+  useListSessions,
   useListTopics,
   getGetTodayScheduleQueryKey,
   getListSessionsQueryKey,
@@ -66,6 +68,26 @@ function formatElapsed(seconds: number): string {
   return `${m}:${s}`;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function isIsoDayMatch(studiedAt: unknown, day: string): boolean {
+  return typeof studiedAt === "string" && studiedAt.startsWith(day);
+}
+
+const STUDY_DAY_START_HOUR = 6;
+const STUDY_DAY_DURATION_HOURS = 16;
+const ON_TRACK_GRACE_MINUTES = 10;
+const MOMENTUM_THRESHOLD_SECONDS = 10 * 60;
+
+function getMomentumLabel(active: boolean, elapsedSeconds: number, completionPct: number, completedMinutes: number): string {
+  if (active && elapsedSeconds >= MOMENTUM_THRESHOLD_SECONDS) return "Building momentum";
+  if (completionPct >= 100) return "Mission complete";
+  if (completedMinutes > 0) return "In motion";
+  return "Ready to start";
+}
+
 function getSessionHint(
   mastery: number,
   sessionType: "lecture" | "practice",
@@ -102,6 +124,7 @@ function getSessionHint(
 
 export default function Schedule() {
   const queryClient = useQueryClient();
+  const [, navigate] = useLocation();
   const { toast } = useToast();
   const [logOpen, setLogOpen] = useState(false);
   const [selectedBlock, setSelectedBlock] = useState<{
@@ -117,6 +140,7 @@ export default function Schedule() {
 
   const { data: schedule, isLoading } = useGetTodaySchedule();
   const { data: topics } = useListTopics();
+  const { data: sessions } = useListSessions({ limit: 200 });
   const recalculate = useRecalculateSchedule();
   const logSession = useLogSession();
 
@@ -240,10 +264,32 @@ export default function Schedule() {
   }
 
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  const todayIso = new Date().toISOString().split("T")[0];
   const scheduleBlocks = Array.isArray(schedule?.blocks) ? schedule.blocks : [];
   const scheduleHours = typeof schedule?.scheduledHours === "number" ? schedule.scheduledHours : 0;
-  const daysUntilExam = typeof schedule?.daysUntilExam === "number" ? schedule.daysUntilExam : 0;
   const hasSchedule = Boolean(schedule);
+  const missionTotalMinutes = Math.max(0, Math.round(scheduleHours * 60));
+  const loggedMinutesToday = useMemo(
+    () => (sessions ?? [])
+      .filter((s) => isIsoDayMatch(s.studiedAt, todayIso))
+      .reduce((sum, s) => sum + s.durationMinutes, 0),
+    [sessions, todayIso],
+  );
+  const missionCompletedMinutes = Math.max(0, loggedMinutesToday + (activeTimer ? elapsed / 60 : 0));
+  const missionCompletion = missionTotalMinutes > 0
+    ? Math.min(100, Math.round((missionCompletedMinutes / missionTotalMinutes) * 100))
+    : 0;
+  const missionRemainingMinutes = Math.max(0, Math.round(missionTotalMinutes - missionCompletedMinutes));
+  const now = new Date();
+  const dayMinutes = now.getHours() * 60 + now.getMinutes();
+  const dayProgress = clamp(
+    (dayMinutes - STUDY_DAY_START_HOUR * 60) / (STUDY_DAY_DURATION_HOURS * 60),
+    0,
+    1,
+  );
+  const expectedByNow = missionTotalMinutes * dayProgress;
+  const onTrack = missionCompletedMinutes + ON_TRACK_GRACE_MINUTES >= expectedByNow;
+  const momentumLabel = getMomentumLabel(Boolean(activeTimer), elapsed, missionCompletion, missionCompletedMinutes);
 
   return (
     <div className="space-y-6" data-testid="schedule-page">
@@ -283,30 +329,28 @@ export default function Schedule() {
         <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-24" />)}</div>
       ) : hasSchedule ? (
         <>
-          <div className="grid gap-4 md:grid-cols-3">
-            <Card>
-              <CardContent className="pt-4">
-                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><Clock className="h-4 w-4" />Scheduled today</div>
-                <p className="text-2xl font-bold">{scheduleHours.toFixed(1)}h</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-4">
-                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><BookOpen className="h-4 w-4" />Study blocks</div>
-                <p className="text-2xl font-bold">{scheduleBlocks.length}</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-4">
-                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1"><Target className="h-4 w-4" />Days until exam</div>
-                <p className="text-2xl font-bold">{daysUntilExam}</p>
-              </CardContent>
-            </Card>
-          </div>
+          <Card className="border-primary/20">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Today’s Mission</CardTitle>
+              <CardDescription>
+                Target {scheduleHours.toFixed(1)}h · {missionRemainingMinutes}m left ·{" "}
+                <span className={onTrack ? "text-emerald-700 font-medium" : "text-amber-700 font-medium"}>
+                  {onTrack ? "On track ✓" : "Behind pace ⚠"}
+                </span>
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <Progress value={missionCompletion} className="h-2" />
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>{missionCompletion}% complete</span>
+                <span>{momentumLabel}</span>
+              </div>
+            </CardContent>
+          </Card>
 
           {schedule?.isReset && (
             <div className="rounded-lg border bg-accent/50 px-4 py-3 text-sm text-accent-foreground">
-              Psychological reset applied — backlog cleared and schedule rebuilt from current position.
+              Fresh recovery mission prepared with a lighter target. Focus only on today’s sequence.
             </div>
           )}
 
@@ -365,16 +409,26 @@ export default function Schedule() {
                               Stop & Log
                             </Button>
                           ) : (
-                            <Button
-                              variant="outline"
-                              className="min-h-[44px] px-3 text-sm"
-                              onClick={() => startTimer({ topicId: block.topicId, topicName: block.topicName, sessionType: block.sessionType }, i)}
-                              disabled={hasOtherActive}
-                              data-testid={`button-start-${i}`}
-                            >
-                              <Play className="h-3.5 w-3.5 mr-1 fill-current" />
-                              Start
-                            </Button>
+                            <>
+                              <Button
+                                className="min-h-[44px] px-3 text-sm"
+                                onClick={() => navigate(`/execute/${i}`)}
+                                disabled={hasOtherActive}
+                                data-testid={`button-focus-${i}`}
+                              >
+                                <Play className="h-3.5 w-3.5 mr-1 fill-current" />
+                                Focus mode
+                              </Button>
+                              <Button
+                                variant="outline"
+                                className="min-h-[44px] px-3 text-sm"
+                                onClick={() => startTimer({ topicId: block.topicId, topicName: block.topicName, sessionType: block.sessionType }, i)}
+                                disabled={hasOtherActive}
+                                data-testid={`button-start-${i}`}
+                              >
+                                Quick timer
+                              </Button>
+                            </>
                           )}
                           {!isThisActive && (
                             <Button

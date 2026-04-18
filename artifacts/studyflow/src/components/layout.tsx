@@ -28,6 +28,11 @@ export function Layout({ children }: { children: ReactNode }) {
     return <>{children}</>;
   }
 
+  // Execution mode: no sidebar, no header — full-screen focused environment
+  if (location.startsWith("/execute")) {
+    return <>{children}</>;
+  }
+
   const SidebarContent = () => (
     <div className="flex h-full flex-col gap-4">
       <div className="flex h-[60px] items-center border-b px-6">
