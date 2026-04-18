@@ -107,7 +107,8 @@ export async function getMigrationStatus(): Promise<"done" | "skipped" | null> {
  * migration.
  *
  * Topics already present locally are deduplicated by lowercase name, and
- * sessions already present locally are deduplicated by `${topicId}:${studiedAt}`.
+ * sessions already present locally are deduplicated by a composite key of
+ * topicId + studiedAt.
  */
 export async function importFromServer(apiUrl: string): Promise<MigrationResult> {
   const result: MigrationResult = {

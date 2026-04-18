@@ -250,8 +250,8 @@ export const SessionsRepo = {
           const keepA = sourceRank(a.source) >= sourceRank(b.source);
           const winner = keepA ? i : j;
           const loser = keepA ? j : i;
-          // Keep credited duration capped at the larger original session
-          // to avoid double counting overlap.
+          // Conservative attribution: keep credited duration capped at the larger
+          // original session to avoid counting overlapping time twice.
           const mergedDurationMs = Math.max(a._durationMs, b._durationMs);
           mutable[winner] = {
             ...mutable[winner],
@@ -354,6 +354,7 @@ export const TelemetryRepo = {
    * qualityScore = sum of (signal * weight), rounded to 2 dp.
    */
   summarizeDay(events: LocalTelemetryEvent[]): TelemetrySummary[] {
+    const MS_PER_DAY = 86_400_000;
     type TopicEntry = {
       date: string;
       focusedMs: number;
@@ -396,10 +397,26 @@ export const TelemetryRepo = {
     }
 
     const sorted = [...events].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    const closeFocusWindow = (e: TopicEntry, ts: number) => {
+      if (e.currentFocusStart !== null) {
+        e.focusedMs += ts - e.currentFocusStart;
+        e.currentFocusStart = null;
+      }
+    };
+    const advanceFocusWindow = (e: TopicEntry, ts: number) => {
+      if (e.currentFocusStart !== null) {
+        e.focusedMs += ts - e.currentFocusStart;
+      }
+    };
+    const utcDayCloseTs = (date: string) => {
+      const dayStartTs = new Date(`${date}T00:00:00.000Z`).getTime();
+      return dayStartTs + MS_PER_DAY;
+    };
 
     for (const ev of sorted) {
       if (!ev.topicId) continue;
       const ts = new Date(ev.timestamp).getTime();
+      // ev.timestamp is ISO-8601, so this date bucket is UTC.
       const date = ev.timestamp.split("T")[0];
       const e = ensureTopic(ev.topicId, date);
 
@@ -424,9 +441,7 @@ export const TelemetryRepo = {
             // Was already in focus window — rapid context switch back
             // (Cmd+Tab / Alt+Tab return without an intervening tab_blur)
             e.tabSwitchCount += 1;
-            if (e.currentFocusStart !== null) {
-              e.focusedMs += ts - e.currentFocusStart;
-            }
+            advanceFocusWindow(e, ts);
           }
           e.currentFocusStart = ts;
           break;
@@ -435,10 +450,7 @@ export const TelemetryRepo = {
         case "tab_blur":
         case "session_end": {
           // Close focus window
-          if (e.currentFocusStart !== null) {
-            e.focusedMs += ts - e.currentFocusStart;
-            e.currentFocusStart = null;
-          }
+          closeFocusWindow(e, ts);
           e.inFocusWindow = false;
           // Start distraction window
           e.currentDistractionStart = ts;
@@ -449,10 +461,7 @@ export const TelemetryRepo = {
 
         case "idle_start": {
           // Idle interrupts focus, but is tracked separately from distraction
-          if (e.currentFocusStart !== null) {
-            e.focusedMs += ts - e.currentFocusStart;
-            e.currentFocusStart = null;
-          }
+          closeFocusWindow(e, ts);
           e.inFocusWindow = false;
           // Close distraction window too (idle is neither focused nor distraction)
           if (e.currentDistractionStart !== null) {
@@ -498,17 +507,15 @@ export const TelemetryRepo = {
 
     // Close any still-open windows at each summarized day's boundary
     for (const e of byTopic.values()) {
-      const dayEndTs = new Date(`${e.date}T23:59:59.999Z`).getTime();
-      if (e.currentFocusStart !== null) {
-        e.focusedMs += dayEndTs - e.currentFocusStart;
-        e.currentFocusStart = null;
-      }
+      // Date buckets are UTC (from ISO timestamps), so close at next UTC day-start.
+      const dayCloseTs = utcDayCloseTs(e.date);
+      closeFocusWindow(e, dayCloseTs);
       if (e.currentDistractionStart !== null) {
-        e.distractionMs += dayEndTs - e.currentDistractionStart;
+        e.distractionMs += dayCloseTs - e.currentDistractionStart;
         e.currentDistractionStart = null;
       }
       if (e.currentIdleStart !== null) {
-        e.idleMs += dayEndTs - e.currentIdleStart;
+        e.idleMs += dayCloseTs - e.currentIdleStart;
         e.currentIdleStart = null;
       }
     }
