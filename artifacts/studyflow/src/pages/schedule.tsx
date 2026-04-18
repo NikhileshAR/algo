@@ -251,7 +251,7 @@ export default function Schedule() {
             void runFeedbackLoop({
               topicId: String(data.topicId),
               topicName,
-              serverMastery: topic?.masteryScore ?? 0.1,
+              serverMastery: topic?.masteryScore ?? 0,
               focusedMinutes: data.durationMinutes,
             });
           }

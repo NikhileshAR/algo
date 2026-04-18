@@ -2,6 +2,8 @@ import { Router, type IRouter } from "express";
 import { db, topicsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { recomputePriorities, applyMasteryUpdate } from "../lib/scheduler";
+import { logger } from "../lib/logger";
+import { ensureMasteryIntegrityOnLoad } from "../lib/mastery-integrity";
 import {
   CreateTopicBody,
   GetTopicParams,
@@ -23,6 +25,7 @@ function formatTopic(t: typeof topicsTable.$inferSelect) {
 }
 
 router.get("/topics", async (_req, res): Promise<void> => {
+  await ensureMasteryIntegrityOnLoad();
   const topics = await db.select().from(topicsTable).orderBy(topicsTable.priorityScore);
   res.json(topics.map(formatTopic).reverse());
 });
@@ -34,6 +37,19 @@ router.post("/topics", async (req, res): Promise<void> => {
     return;
   }
 
+  const rawMastery = parsed.data.masteryScore;
+  if (rawMastery === undefined) {
+    logger.warn({ topicName: parsed.data.name }, "Missing masteryScore in topic input; defaulting to 0.0");
+  }
+
+  if (rawMastery !== undefined && (!Number.isFinite(rawMastery) || rawMastery < 0 || rawMastery > 1)) {
+    logger.warn({ topicName: parsed.data.name, masteryScore: rawMastery }, "Invalid masteryScore in topic input; rejecting");
+    res.status(400).json({ error: "masteryScore must be a finite number in [0, 1]" });
+    return;
+  }
+
+  const masteryScore = rawMastery === undefined ? 0 : Math.min(1, Math.max(0, rawMastery));
+
   const [topic] = await db
     .insert(topicsTable)
     .values({
@@ -41,7 +57,7 @@ router.post("/topics", async (req, res): Promise<void> => {
       subject: parsed.data.subject,
       difficultyLevel: parsed.data.difficultyLevel,
       estimatedHours: parsed.data.estimatedHours,
-      masteryScore: parsed.data.masteryScore ?? 0,
+      masteryScore,
       prerequisites: JSON.stringify(parsed.data.prerequisites ?? []),
     })
     .returning();

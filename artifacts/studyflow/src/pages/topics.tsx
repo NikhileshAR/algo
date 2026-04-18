@@ -163,21 +163,56 @@ function TopicHistory({ topicId }: { topicId: number }) {
   );
 }
 
-function parseCSV(text: string): Array<{ name: string; subject: string; difficultyLevel: number; estimatedHours: number; masteryScore: number }> {
+function parseCSV(text: string): {
+  rows: Array<{ name: string; subject: string; difficultyLevel: number; estimatedHours: number; masteryScore: number }>;
+  warnings: string[];
+  rejectedRows: number;
+} {
   const lines = text.trim().split("\n").map((l) => l.trim()).filter(Boolean);
-  const results = [];
+  const results: Array<{ name: string; subject: string; difficultyLevel: number; estimatedHours: number; masteryScore: number }> = [];
+  const warnings: string[] = [];
+  let rejectedRows = 0;
   const startIndex = lines[0]?.toLowerCase().includes("name") ? 1 : 0;
-  for (const line of lines.slice(startIndex)) {
+  for (const [index, line] of lines.slice(startIndex).entries()) {
+    const rowNumber = startIndex + index + 1;
     const cols = line.split(",").map((c) => c.trim().replace(/^["']|["']$/g, ""));
-    if (cols.length < 2) continue;
+    if (cols.length < 2) {
+      warnings.push(`Row ${rowNumber}: rejected (missing required name/subject columns).`);
+      rejectedRows++;
+      continue;
+    }
     const name = cols[0];
     const subject = cols[1] || "Other";
     const difficultyLevel = Math.min(5, Math.max(1, parseInt(cols[2]) || 3));
     const estimatedHours = Math.max(0.5, parseFloat(cols[3]) || 5);
-    const masteryScore = Math.min(1, Math.max(0, parseFloat(cols[4]) || 0));
-    if (name) results.push({ name, subject, difficultyLevel, estimatedHours, masteryScore });
+    const masteryRaw = cols[4];
+    let masteryScore = 0;
+
+    if (masteryRaw === undefined || masteryRaw === "") {
+      warnings.push(`Row ${rowNumber}: mastery missing; defaulted to 0.0.`);
+    } else {
+      const parsedMastery = Number(masteryRaw);
+      if (!Number.isFinite(parsedMastery)) {
+        warnings.push(`Row ${rowNumber}: rejected invalid mastery "${masteryRaw}" (must be numeric 0..1).`);
+        rejectedRows++;
+        continue;
+      }
+      if (parsedMastery < 0 || parsedMastery > 1) {
+        warnings.push(`Row ${rowNumber}: rejected out-of-range mastery "${masteryRaw}" (must be 0..1).`);
+        rejectedRows++;
+        continue;
+      }
+      masteryScore = Math.min(1, Math.max(0, parsedMastery));
+    }
+
+    if (name) {
+      results.push({ name, subject, difficultyLevel, estimatedHours, masteryScore });
+    } else {
+      warnings.push(`Row ${rowNumber}: rejected empty topic name.`);
+      rejectedRows++;
+    }
   }
-  return results;
+  return { rows: results, warnings, rejectedRows };
 }
 
 export default function Topics() {
@@ -236,7 +271,13 @@ export default function Topics() {
     if (!file) return;
     e.target.value = "";
     const text = await file.text();
-    const rows = parseCSV(text);
+    const parsed = parseCSV(text);
+    const { rows, warnings, rejectedRows } = parsed;
+    if (warnings.length > 0) {
+      for (const warning of warnings) {
+        console.warn(`[CSV import] ${warning}`);
+      }
+    }
     if (rows.length === 0) { toast({ title: "No valid rows found", description: "Check your CSV format: name,subject,difficulty,estimatedHours,mastery", variant: "destructive" }); return; }
     setImporting(true);
     let created = 0; let failed = 0;
@@ -252,7 +293,16 @@ export default function Topics() {
     }
     setImporting(false);
     invalidate();
-    toast({ title: `Import complete — ${created} topics added`, description: failed > 0 ? `${failed} rows failed.` : "All rows imported successfully." });
+    const failureCount = failed + rejectedRows;
+    const warningCount = warnings.length;
+    toast({
+      title: `Import complete — ${created} topics added`,
+      description: failureCount > 0
+        ? `${failureCount} rows failed/rejected.${warningCount > 0 ? ` ${warningCount} warnings logged.` : ""}`
+        : warningCount > 0
+          ? `${warningCount} warnings logged.`
+          : "All rows imported successfully.",
+    });
   }
 
   const allTopics = topics ?? [];

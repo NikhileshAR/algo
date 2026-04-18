@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db, studentProfileTable, topicsTable, studySessionsTable, schedulesTable } from "@workspace/db";
 import { desc, eq, gte, sql } from "drizzle-orm";
+import { ensureMasteryIntegrityOnLoad } from "../lib/mastery-integrity";
 
 const router: IRouter = Router();
 
@@ -12,6 +13,7 @@ function daysUntil(examDate: string): number {
 }
 
 router.get("/dashboard/summary", async (req, res): Promise<void> => {
+  await ensureMasteryIntegrityOnLoad();
   const [profile] = await db.select().from(studentProfileTable).limit(1);
   if (!profile) {
     res.status(404).json({ error: "No profile found" });

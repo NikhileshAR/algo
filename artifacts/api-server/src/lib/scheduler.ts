@@ -118,6 +118,16 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function computeMasteryVariance(masteryValues: number[]): { variance: number; allZero: boolean } {
+  if (masteryValues.length === 0) {
+    return { variance: 0, allZero: true };
+  }
+  const mean = masteryValues.reduce((sum, value) => sum + value, 0) / masteryValues.length;
+  const variance = masteryValues.reduce((sum, value) => sum + (value - mean) ** 2, 0) / masteryValues.length;
+  const allZero = masteryValues.every((value) => value === 0);
+  return { variance: Math.round(variance * 1000) / 1000, allZero };
+}
+
 function buildAdjacency(topics: TopicRow[]): Map<number, number[]> {
   const graph = new Map<number, number[]>();
   for (const topic of topics) {
@@ -274,6 +284,13 @@ export function buildSchedulePlan(params: {
   };
   const profile = params.profile;
   const topics = params.topics;
+  const masteryStats = computeMasteryVariance(topics.map((topic) => topic.masteryScore));
+  if (masteryStats.variance === 0 && !masteryStats.allZero) {
+    logger.warn(
+      { topicCount: topics.length, variance: masteryStats.variance },
+      "Scheduler input anomaly: mastery variance is zero for a non-zero state",
+    );
+  }
   const openTopics = topics.filter((t) => !t.isCompleted);
   const days = daysUntil(profile.examDate);
   const riskSignal = scoreBacklogRisk(profile, days, openTopics.length);
