@@ -73,6 +73,7 @@ export interface BlockExplanation {
 }
 
 const TARGET_ACTIVE_PRACTICE_RATIO = 0.5;
+const PRACTICE_IMBALANCE_THRESHOLD = 0.35;
 
 export interface PlannerRiskSignal {
   backlogRisk: number;
@@ -151,13 +152,21 @@ function computePriorityBreakdown(
 ): PriorityBreakdown {
   const daysDormant = daysSinceStudied(topic.lastStudiedAt);
   const retention = forgettingRetention(topic.masteryScore, daysDormant, tuning.decayConstant);
+  // Effective mastery is modeled as mastery attenuated by retention (m * R).
+  // Priority pressure then uses the complementary gap: 1 - effectiveMastery.
   const lowMastery = clamp(1 - topic.masteryScore * retention, 0, 1);
   const weightage = clamp(daysUntilExam > 0 ? topic.estimatedHours / daysUntilExam : topic.estimatedHours, 0, 10);
   const difficulty = clamp(topic.difficultyLevel / 5, 0.2, 1);
   const unlockedDownstreamTopics = countUnlockedDownstream(topic.id, graph);
   const dependencyPressure = clamp(unlockedDownstreamTopics / 5, 0, 1);
   const decayPressure = clamp(1 - retention, 0, 1);
-  const practicePressure = clamp(profile.activePracticeRatio < 0.35 ? (0.35 - profile.activePracticeRatio) / 0.35 : 0, 0, 1);
+  const practicePressure = clamp(
+    profile.activePracticeRatio < PRACTICE_IMBALANCE_THRESHOLD
+      ? (PRACTICE_IMBALANCE_THRESHOLD - profile.activePracticeRatio) / PRACTICE_IMBALANCE_THRESHOLD
+      : 0,
+    0,
+    1,
+  );
   const performancePressure = clamp(1 - topic.confidenceScore, 0, 1);
   const disciplineMod = 1 / Math.max(profile.disciplineScore, 0.1);
 

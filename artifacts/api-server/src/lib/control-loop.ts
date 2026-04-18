@@ -130,7 +130,9 @@ function extractHighPriorityTopicIds(topics: TopicRow[]): Set<number> {
   const scored = topics
     .map((topic) => ({
       topicId: topic.id,
-      score: topic.estimatedHours * (topic.difficultyLevel / 5) * (1 - topic.masteryScore),
+      score: topic.priorityScore > 0
+        ? topic.priorityScore
+        : topic.estimatedHours * (topic.difficultyLevel / 5) * (1 - topic.masteryScore),
     }))
     .sort((a, b) => b.score - a.score);
 
@@ -402,8 +404,12 @@ export async function computePerformanceGap(daysLookback = 14): Promise<Performa
     );
   }
 
-  // Expected behavior assumes scheduled topic blocks should be completed.
-  const expectedTopicCompletion = expectedTopicMinutes.size > 0 ? 1 : 0;
+  const expectedTopicCompletion = expectedTopicMinutes.size > 0
+    ? Array.from(expectedTopicMinutes.values()).reduce((sum, minutes) => {
+        const expectedCompletionForTopic = clamp(minutes / 45, 0, 1);
+        return sum + expectedCompletionForTopic;
+      }, 0) / expectedTopicMinutes.size
+    : 0;
   const actualTopicCompletion = expectedTopicMinutes.size > 0
     ? Array.from(expectedTopicMinutes.keys()).reduce((sum, topicId) => {
         const expected = expectedTopicMinutes.get(topicId) ?? 0;
