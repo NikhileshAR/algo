@@ -67,15 +67,16 @@ function CurriculumForecast({ topics, summary }: {
   summary: { averageMastery: number; daysUntilExam: number; weeklyStudiedHours: number; examDate: string };
 }) {
   if (topics.length === 0) return null;
+  const clamp01 = (value: number) => Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
   const totalEstimatedHours = topics.reduce((s, t) => s + t.estimatedHours, 0);
   const completedTopics = topics.filter((t) => t.isCompleted).length;
-  const avgMastery = summary.averageMastery;
+  const avgMastery = clamp01(summary.averageMastery);
   const daysLeft = summary.daysUntilExam;
   const weeklyHours = summary.weeklyStudiedHours;
   const dailyHours = weeklyHours > 0 ? weeklyHours / 7 : 0;
   const hoursRemaining = daysLeft * dailyHours;
   const masteryGainPerHour = totalEstimatedHours > 0 ? 0.7 / totalEstimatedHours : 0;
-  const projectedMastery = Math.min(1, avgMastery + hoursRemaining * masteryGainPerHour);
+  const projectedMastery = clamp01(avgMastery + hoursRemaining * masteryGainPerHour);
   const projectedPercent = Math.round(projectedMastery * 100);
   const currentPercent = Math.round(avgMastery * 100);
   const onTrack = projectedMastery >= TARGET_MASTERY_THRESHOLD;

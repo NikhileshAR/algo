@@ -44,6 +44,7 @@ import { useToast } from "@/hooks/use-toast";
 import { RefreshCw, Clock, CheckCircle2, BookOpen, Target, Info, Play, Square } from "lucide-react";
 import { recordManualTelemetryEvent, syncSchedulerTelemetryInput } from "@/lib/local-db/bridge";
 import { runFeedbackLoop } from "@/lib/feedback-loop";
+import { useLocalHydration } from "@/hooks/use-local-hydration";
 
 const logSessionSchema = z.object({
   topicId: z.coerce.number().min(1, "Select a topic"),
@@ -140,8 +141,10 @@ export default function Schedule() {
   const currentBlockRef = useRef<HTMLDivElement | null>(null);
   const hasInitialFocusRef = useRef(false);
   const lastFocusedTimerBlockRef = useRef<number | null>(null);
+  const attemptedAutoRecalcRef = useRef(false);
+  const { isHydrated, hydrationError } = useLocalHydration();
 
-  const { data: schedule, isLoading } = useGetTodaySchedule();
+  const { data: schedule, isLoading, isError: scheduleError } = useGetTodaySchedule();
   const { data: topics } = useListTopics();
   const { data: sessions } = useListSessions({ limit: 200 });
   const recalculate = useRecalculateSchedule();
@@ -308,6 +311,21 @@ export default function Schedule() {
   const remainingBlocks = scheduleBlocks.slice(currentIndex + 2);
 
   useEffect(() => {
+    if (
+      !isHydrated ||
+      isLoading ||
+      hasSchedule ||
+      (topics?.length ?? 0) === 0 ||
+      recalculate.isPending ||
+      attemptedAutoRecalcRef.current
+    ) {
+      return;
+    }
+    attemptedAutoRecalcRef.current = true;
+    handleRecalculate();
+  }, [isHydrated, isLoading, hasSchedule, topics, recalculate.isPending]);
+
+  useEffect(() => {
     if (!currentBlockRef.current) return;
     const timerBlockChanged = activeTimer?.blockIndex !== undefined && activeTimer.blockIndex !== lastFocusedTimerBlockRef.current;
     const shouldFocus = !hasInitialFocusRef.current || timerBlockChanged;
@@ -355,8 +373,17 @@ export default function Schedule() {
         </div>
       )}
 
-      {isLoading ? (
+      {!isHydrated || isLoading ? (
         <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-24" />)}</div>
+      ) : hydrationError || scheduleError ? (
+        <Card>
+          <CardContent className="py-6 space-y-3">
+            <p className="text-sm text-muted-foreground">We couldn’t load today’s schedule. Please retry.</p>
+            <Button variant="outline" onClick={() => queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() })}>
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
       ) : hasSchedule ? (
         <>
           <Card className="border-primary/20">
@@ -517,7 +544,28 @@ export default function Schedule() {
             )}
           </div>
         </>
-      ) : null}
+      ) : (
+        <Card>
+          <CardContent className="py-10 text-center space-y-3 text-muted-foreground">
+            <p className="font-medium text-foreground">No mission available yet</p>
+            <p className="text-sm">
+              {(topics?.length ?? 0) > 0
+                ? "We’re preparing your schedule. Recalculate to generate today’s mission."
+                : "Add topics first, then recalculate to generate today’s mission."}
+            </p>
+            {(topics?.length ?? 0) > 0 ? (
+              <Button variant="outline" onClick={handleRecalculate} disabled={recalculate.isPending}>
+                <RefreshCw className={`h-4 w-4 mr-2 ${recalculate.isPending ? "animate-spin" : ""}`} />
+                Recalculate now
+              </Button>
+            ) : (
+              <Link href="/topics">
+                <Button variant="outline">Go to Topics</Button>
+              </Link>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Dialog open={logOpen} onOpenChange={setLogOpen}>
         <DialogContent>

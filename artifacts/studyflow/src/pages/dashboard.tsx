@@ -1,12 +1,14 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useLocation, Link } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useGetStudentProfile,
   getGetStudentProfileQueryKey,
   useListSessions,
   useListTopics,
   type DailySchedule,
+  getGetTodayScheduleQueryKey,
+  useRecalculateSchedule,
 } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -14,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ArrowRight, Clock3, CircleCheck, PlayCircle, AlertTriangle, RefreshCw, Sparkles } from "lucide-react";
+import { useLocalHydration } from "@/hooks/use-local-hydration";
 
 type RiskSignal = {
   backlogRisk: number;
@@ -106,6 +109,10 @@ function blockReason(block: BlockWithExplanation): string {
 
 export default function Dashboard() {
   const [, setLocation] = useLocation();
+  const queryClient = useQueryClient();
+  const recalculate = useRecalculateSchedule();
+  const attemptedAutoRecalcRef = useRef(false);
+  const { isHydrated, hydrationError } = useLocalHydration();
 
   const { data: profile, isError: profileError, isLoading: profileLoading } = useGetStudentProfile({
     query: { queryKey: getGetStudentProfileQueryKey(), retry: false },
@@ -113,9 +120,19 @@ export default function Dashboard() {
   const { data: topics } = useListTopics();
   const { data: sessions } = useListSessions({ limit: 200 });
 
-  const { data: scheduleWithControl, isLoading: scheduleLoading } = useQuery<ExtendedSchedule>({
-    queryKey: ["schedule", "today", "extended"],
-    queryFn: () => fetch("/api/schedule/today").then((r) => r.json()),
+  const {
+    data: scheduleWithControl,
+    isLoading: scheduleLoading,
+    isError: scheduleError,
+  } = useQuery<ExtendedSchedule>({
+    queryKey: getGetTodayScheduleQueryKey(),
+    queryFn: async () => {
+      const response = await fetch("/api/schedule/today");
+      if (!response.ok) {
+        throw new Error("Failed to load today's schedule.");
+      }
+      return response.json() as Promise<ExtendedSchedule>;
+    },
     refetchInterval: 10000,
   });
 
@@ -124,6 +141,27 @@ export default function Dashboard() {
       setLocation("/onboarding");
     }
   }, [profileLoading, profileError, setLocation]);
+
+  const hasTopics = (topics?.length ?? 0) > 0;
+
+  useEffect(() => {
+    if (!isHydrated || scheduleLoading || scheduleWithControl || !hasTopics || recalculate.isPending || attemptedAutoRecalcRef.current) {
+      return;
+    }
+    attemptedAutoRecalcRef.current = true;
+    recalculate.mutate(undefined, {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() });
+      },
+    });
+  }, [
+    isHydrated,
+    scheduleLoading,
+    scheduleWithControl,
+    hasTopics,
+    recalculate,
+    queryClient,
+  ]);
 
   const today = toIsoDay();
   const schedule = scheduleWithControl;
@@ -174,7 +212,14 @@ export default function Dashboard() {
 
   const firstPendingIndex = numberedBlocks.find((nb) => nb.status !== "done")?.index ?? 0;
 
-  if (profileLoading || scheduleLoading) {
+  const dashboardState: "loading" | "error" | "success" =
+    !isHydrated || profileLoading || scheduleLoading
+      ? "loading"
+      : hydrationError || profileError || scheduleError
+        ? "error"
+        : "success";
+
+  if (dashboardState === "loading") {
     return (
       <div className="space-y-4">
         <Skeleton className="h-8 w-56" />
@@ -184,11 +229,48 @@ export default function Dashboard() {
     );
   }
 
-  if (!profile) {
-    return null;
+  if (dashboardState === "error") {
+    return (
+      <div className="space-y-4" data-testid="dashboard-error">
+        <h1 className="text-2xl font-bold tracking-tight">Today’s Mission</h1>
+        <Card>
+          <CardContent className="py-6 space-y-3">
+            <p className="text-sm text-muted-foreground">
+              We couldn’t load your latest mission yet. Please retry.
+            </p>
+            <Button
+              variant="outline"
+              onClick={() => {
+                queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() });
+                queryClient.invalidateQueries({ queryKey: getGetStudentProfileQueryKey() });
+              }}
+            >
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
-  const hasTopics = (topics?.length ?? 0) > 0;
+  if (!profile) {
+    return (
+      <div className="space-y-4" data-testid="dashboard-empty-profile">
+        <h1 className="text-2xl font-bold tracking-tight">Today’s Mission</h1>
+        <Card>
+          <CardContent className="py-6 space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Your profile is not ready yet. Complete onboarding to generate your mission.
+            </p>
+            <Link href="/onboarding">
+              <Button variant="outline">Go to onboarding</Button>
+            </Link>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const hasMission = hasTopics && Boolean(schedule) && scheduleBlocks.length > 0;
 
   return (

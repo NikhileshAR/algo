@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   RotateCcw,
 } from "lucide-react";
+import { useLocalHydration } from "@/hooks/use-local-hydration";
 
 interface WeeklyReview {
   weeklySessions: Array<{
@@ -47,6 +48,66 @@ interface WeeklyReview {
   recoveryDays: number;
 }
 
+const EMPTY_WEEKLY_REVIEW: WeeklyReview = {
+  weeklySessions: [],
+  totalMinutes: 0,
+  totalHours: 0,
+  previousWeekMinutes: 0,
+  previousWeekHours: 0,
+  practiceCount: 0,
+  lectureCount: 0,
+  previousWeekPracticeCount: 0,
+  previousWeekLectureCount: 0,
+  daysWithStudy: 0,
+  previousWeekDaysWithStudy: 0,
+  dailyHours: Array.from({ length: 7 }).map((_, index) => ({
+    date: new Date(Date.now() - (6 - index) * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
+    label: new Date(Date.now() - (6 - index) * 24 * 60 * 60 * 1000).toLocaleDateString("en-US", { weekday: "short" }),
+    minutes: 0,
+    hours: 0,
+  })),
+  consistencyDroppedMidWeek: false,
+  skippedPracticeSessions: false,
+  recoveryDays: 0,
+};
+
+function normalizeWeeklyReview(raw: unknown): WeeklyReview {
+  if (!raw || typeof raw !== "object") {
+    return EMPTY_WEEKLY_REVIEW;
+  }
+
+  const input = raw as Partial<WeeklyReview>;
+  const dailyHours = Array.isArray(input.dailyHours)
+    ? input.dailyHours.map((entry) => ({
+      date: typeof entry?.date === "string" ? entry.date : "",
+      label: typeof entry?.label === "string" ? entry.label : "",
+      minutes: typeof entry?.minutes === "number" && Number.isFinite(entry.minutes) ? Math.max(0, entry.minutes) : 0,
+      hours: typeof entry?.hours === "number" && Number.isFinite(entry.hours) ? Math.max(0, entry.hours) : 0,
+    }))
+    : EMPTY_WEEKLY_REVIEW.dailyHours;
+
+  return {
+    weeklySessions: Array.isArray(input.weeklySessions) ? input.weeklySessions : [],
+    totalMinutes: typeof input.totalMinutes === "number" && Number.isFinite(input.totalMinutes) ? Math.max(0, input.totalMinutes) : 0,
+    totalHours: typeof input.totalHours === "number" && Number.isFinite(input.totalHours) ? Math.max(0, input.totalHours) : 0,
+    previousWeekMinutes: typeof input.previousWeekMinutes === "number" && Number.isFinite(input.previousWeekMinutes) ? Math.max(0, input.previousWeekMinutes) : 0,
+    previousWeekHours: typeof input.previousWeekHours === "number" && Number.isFinite(input.previousWeekHours) ? Math.max(0, input.previousWeekHours) : 0,
+    practiceCount: typeof input.practiceCount === "number" && Number.isFinite(input.practiceCount) ? Math.max(0, input.practiceCount) : 0,
+    lectureCount: typeof input.lectureCount === "number" && Number.isFinite(input.lectureCount) ? Math.max(0, input.lectureCount) : 0,
+    previousWeekPracticeCount: typeof input.previousWeekPracticeCount === "number" && Number.isFinite(input.previousWeekPracticeCount) ? Math.max(0, input.previousWeekPracticeCount) : 0,
+    previousWeekLectureCount: typeof input.previousWeekLectureCount === "number" && Number.isFinite(input.previousWeekLectureCount) ? Math.max(0, input.previousWeekLectureCount) : 0,
+    daysWithStudy: typeof input.daysWithStudy === "number" && Number.isFinite(input.daysWithStudy) ? Math.max(0, Math.min(7, input.daysWithStudy)) : 0,
+    previousWeekDaysWithStudy:
+      typeof input.previousWeekDaysWithStudy === "number" && Number.isFinite(input.previousWeekDaysWithStudy)
+        ? Math.max(0, Math.min(7, input.previousWeekDaysWithStudy))
+        : 0,
+    dailyHours: dailyHours.length > 0 ? dailyHours : EMPTY_WEEKLY_REVIEW.dailyHours,
+    consistencyDroppedMidWeek: Boolean(input.consistencyDroppedMidWeek),
+    skippedPracticeSessions: Boolean(input.skippedPracticeSessions),
+    recoveryDays: typeof input.recoveryDays === "number" && Number.isFinite(input.recoveryDays) ? Math.max(0, input.recoveryDays) : 0,
+  };
+}
+
 function formatHours(minutes: number) {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
@@ -56,9 +117,18 @@ function formatHours(minutes: number) {
 }
 
 export default function Review() {
-  const { data, isLoading } = useQuery<WeeklyReview>({
+  const { isHydrated } = useLocalHydration();
+  const { data, isLoading, isError } = useQuery<WeeklyReview>({
     queryKey: ["analytics", "weekly-review"],
-    queryFn: () => fetch("/api/analytics/weekly-review").then((r) => r.json()),
+    queryFn: async () => {
+      const response = await fetch("/api/analytics/weekly-review");
+      if (!response.ok) {
+        throw new Error("Failed to load weekly review.");
+      }
+      const raw = await response.json();
+      return normalizeWeeklyReview(raw);
+    },
+    retry: false,
   });
 
   const weekStr = (() => {
@@ -67,7 +137,16 @@ export default function Review() {
     return `${weekAgo.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${today.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
   })();
 
-  if (isLoading) {
+  const viewState: "loading" | "error" | "empty" | "success" =
+    !isHydrated || isLoading
+      ? "loading"
+      : isError
+        ? "error"
+        : !data || data.weeklySessions.length === 0
+          ? "empty"
+          : "success";
+
+  if (viewState === "loading") {
     return (
       <div className="space-y-6">
         <div><Skeleton className="h-8 w-48 mb-2" /><Skeleton className="h-4 w-32" /></div>
@@ -77,11 +156,10 @@ export default function Review() {
     );
   }
 
-  if (!data) return null;
-
-  const hoursDelta = data.totalHours - data.previousWeekHours;
-  const consistencyDelta = data.daysWithStudy - data.previousWeekDaysWithStudy;
-  const hasAnyStudy = data.totalMinutes > 0;
+  const reviewData = viewState === "success" ? data : EMPTY_WEEKLY_REVIEW;
+  const hoursDelta = reviewData.totalHours - reviewData.previousWeekHours;
+  const consistencyDelta = reviewData.daysWithStudy - reviewData.previousWeekDaysWithStudy;
+  const hasAnyStudy = reviewData.totalMinutes > 0;
 
   return (
     <div className="space-y-6" data-testid="review-page">
@@ -90,17 +168,32 @@ export default function Review() {
         <p className="text-muted-foreground">{weekStr}</p>
       </div>
 
+      {viewState === "error" && (
+        <Card>
+          <CardContent className="py-3 text-sm text-muted-foreground">
+            We couldn’t load this week’s data. Showing safe defaults for now.
+          </CardContent>
+        </Card>
+      )}
+      {viewState === "empty" && (
+        <Card>
+          <CardContent className="py-3 text-sm text-muted-foreground">
+            No data this week yet.
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm flex items-center gap-2"><Clock className="h-4 w-4" />Weekly Progress</CardTitle>
           </CardHeader>
           <CardContent className="space-y-1">
-            <p className="text-2xl font-bold">{formatHours(data.totalMinutes)}</p>
+            <p className="text-2xl font-bold">{formatHours(reviewData.totalMinutes)}</p>
             <p className="text-xs text-muted-foreground">
               {`${hoursDelta > 0 ? "+" : ""}${hoursDelta.toFixed(1)}h vs last week`}
             </p>
-            <p className="text-xs text-muted-foreground">{data.weeklySessions.length} sessions across {data.daysWithStudy}/7 days</p>
+            <p className="text-xs text-muted-foreground">{reviewData.weeklySessions.length} sessions across {reviewData.daysWithStudy}/7 days</p>
           </CardContent>
         </Card>
 
@@ -109,7 +202,7 @@ export default function Review() {
             <CardTitle className="text-sm flex items-center gap-2"><TrendingUp className="h-4 w-4" />Behavioral Insight</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
-            {data.skippedPracticeSessions ? (
+            {reviewData.skippedPracticeSessions ? (
               <div className="flex items-start gap-2 text-sm">
                 <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-600" />
                 <span>You are skipping practice sessions and leaning on lectures.</span>
@@ -121,7 +214,7 @@ export default function Review() {
               </div>
             )}
 
-            {data.consistencyDroppedMidWeek ? (
+            {reviewData.consistencyDroppedMidWeek ? (
               <div className="flex items-start gap-2 text-sm">
                 <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-600" />
                 <span>Your consistency dropped mid-week.</span>
@@ -145,8 +238,8 @@ export default function Review() {
             {hasAnyStudy ? (
               <>
                 <p className="text-sm font-medium">
-                  {data.recoveryDays > 0
-                    ? `You recovered in ${data.recoveryDays} day${data.recoveryDays === 1 ? "" : "s"} after a break.`
+                  {reviewData.recoveryDays > 0
+                    ? `You recovered in ${reviewData.recoveryDays} day${reviewData.recoveryDays === 1 ? "" : "s"} after a break.`
                     : "No break recovery event this week — you stayed in rhythm."}
                 </p>
                 <p className="text-xs text-muted-foreground">Use short restart sessions after breaks to recover faster.</p>
@@ -165,7 +258,7 @@ export default function Review() {
         </CardHeader>
         <CardContent>
           <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={data.dailyHours}>
+            <BarChart data={reviewData.dailyHours}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
               <XAxis dataKey="label" tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
