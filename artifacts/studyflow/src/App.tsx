@@ -16,16 +16,16 @@ const queryClient = new QueryClient();
 
 function App() {
   const { isHydrated, hydrationError } = useLocalHydration();
-  const loadingHydration = !isHydrated;
-  const { timedOut } = useBoundedLoading("app-hydration", loadingHydration);
+  const isLoadingHydration = !isHydrated;
+  const { timedOut } = useBoundedLoading("app-hydration", isLoadingHydration);
 
   useEffect(() => {
-    if (loadingHydration && timedOut) {
+    if (isLoadingHydration && timedOut) {
       logObservabilityEvent("hydration_slow", { timeoutMs: 1800 });
     }
-  }, [loadingHydration, timedOut]);
+  }, [isLoadingHydration, timedOut]);
 
-  if (loadingHydration && !timedOut) {
+  if (isLoadingHydration && !timedOut) {
     return (
       <div className="p-4 space-y-4">
         <Skeleton className="h-8 w-56" />
@@ -34,7 +34,7 @@ function App() {
     );
   }
 
-  if (loadingHydration && timedOut) {
+  if (isLoadingHydration && timedOut) {
     return (
       <div className="p-4">
         <Card>

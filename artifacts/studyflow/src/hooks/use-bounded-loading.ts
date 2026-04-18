@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { logObservabilityEvent } from "@/lib/observability";
 
+// 1.8s hard cap keeps skeleton/loading placeholders responsive in cold-start and degraded environments.
 const DEFAULT_LOADING_TIMEOUT_MS = 1800;
 
 export function useBoundedLoading(

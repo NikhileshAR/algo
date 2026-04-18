@@ -148,10 +148,10 @@ export default function Schedule() {
   const { data: sessions } = useListSessions({ limit: 200 });
   const recalculate = useRecalculateSchedule();
   const logSession = useLogSession();
-  const loadingSchedule = !isHydrated || isLoading;
+  const isLoadingSchedule = !isHydrated || isLoading;
   const { timedOut: scheduleTimedOut, resetTimeout: resetScheduleTimeout } = useBoundedLoading(
     "schedule-page",
-    loadingSchedule,
+    isLoadingSchedule,
   );
 
   const form = useForm<z.infer<typeof logSessionSchema>>({
@@ -379,7 +379,7 @@ export default function Schedule() {
         </div>
       )}
 
-      {loadingSchedule && !scheduleTimedOut ? (
+      {isLoadingSchedule && !scheduleTimedOut ? (
         <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-24" />)}</div>
       ) : scheduleTimedOut ? (
         <Card>

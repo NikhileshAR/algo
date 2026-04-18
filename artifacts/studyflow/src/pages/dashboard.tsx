@@ -42,17 +42,25 @@ type ExtendedSchedule = DailySchedule & {
 };
 
 type MissionFallbackBlock = {
+  isFallback: true;
   topicId: number;
   topicName: string;
   durationMinutes: number;
   sessionType: "lecture" | "practice";
 };
 
+type RenderMissionBlock =
+  | { block: BlockWithExplanation; index: number; status: "done" | "continue" | "now" | "next"; isFallback: false }
+  | { block: MissionFallbackBlock; index: number; status: "next"; isFallback: true };
+
 const EXPLANATION_DISPLAY_THRESHOLD = 0.5;
 const STRONG_MOMENTUM_MINUTES = 90;
 const ALMOST_THERE_MINUTES = 60;
 const MIN_CATCHUP_HOURS = 0.5;
 const MISSION_RETRY_LIMIT = 1;
+const COLD_START_SESSION_THRESHOLD = 5;
+const COLD_START_MASTERY_THRESHOLD = 0.1;
+const FALLBACK_LECTURE_MASTERY_THRESHOLD = 0.2;
 
 type BlockWithExplanation = DailySchedule["blocks"][number] & {
   explanation?: {
@@ -145,14 +153,15 @@ export default function Dashboard() {
       return response.json() as Promise<ExtendedSchedule>;
     },
     refetchInterval: 10000,
+    // One bounded retry so mission fetch retry window stays within loading timeout budget.
     retry: MISSION_RETRY_LIMIT,
-    retryDelay: 250,
+    retryDelay: (attempt) => Math.min(500 * 2 ** attempt, 2000),
   });
 
-  const loadingMission = !isHydrated || profileLoading || scheduleLoading;
+  const isLoadingMission = !isHydrated || profileLoading || scheduleLoading;
   const { timedOut: missionLoadTimedOut, resetTimeout: resetMissionTimeout } = useBoundedLoading(
     "dashboard-mission",
-    loadingMission,
+    isLoadingMission,
   );
 
   useEffect(() => {
@@ -162,11 +171,13 @@ export default function Dashboard() {
   }, [profileLoading, profileError, setLocation]);
 
   const hasTopics = (topics?.length ?? 0) > 0;
-  const sessionCount = sessions?.length ?? 0;
-  const avgMastery = (topics?.length ?? 0) > 0
-    ? (topics ?? []).reduce((sum, topic) => sum + topic.masteryScore, 0) / (topics?.length ?? 1)
+  const historicalSessionCount = sessions?.length ?? 0;
+  const avgMastery = hasTopics
+    ? (topics ?? []).reduce((sum, topic) => sum + topic.masteryScore, 0) / (topics ?? []).length
     : 0;
-  const isColdStart = sessionCount < 5 && avgMastery <= 0.1;
+  const isColdStart =
+    historicalSessionCount < COLD_START_SESSION_THRESHOLD &&
+    avgMastery <= COLD_START_MASTERY_THRESHOLD;
 
   useEffect(() => {
     if (scheduleError) {
@@ -259,21 +270,23 @@ export default function Dashboard() {
   const firstPendingIndex = numberedBlocks.find((nb) => nb.status !== "done")?.index ?? 0;
 
   const fallbackMissionBlocks = useMemo<MissionFallbackBlock[]>(() => {
-    return [...(topics ?? [])]
+    return (topics ?? [])
+      .slice()
       .sort((a, b) => (b.priorityScore ?? 0) - (a.priorityScore ?? 0))
       .slice(0, 2)
       .map((topic, index) => ({
+        isFallback: true,
         topicId: topic.id,
         topicName: topic.name,
         durationMinutes: index === 0 ? 30 : 20,
-        sessionType: topic.masteryScore < 0.2 ? "lecture" : "practice",
+        sessionType: topic.masteryScore < FALLBACK_LECTURE_MASTERY_THRESHOLD ? "lecture" : "practice",
       }));
   }, [topics]);
 
   const hasFallbackMission = fallbackMissionBlocks.length > 0;
 
   const dashboardState: "loading" | "ready" | "empty" | "error" | "fallback" =
-    loadingMission
+    isLoadingMission
       ? missionLoadTimedOut
         ? "fallback"
         : "loading"
@@ -339,9 +352,9 @@ export default function Dashboard() {
 
   const hasMission = hasTopics && Boolean(schedule) && scheduleBlocks.length > 0;
   const showFallbackMission = dashboardState === "fallback" && hasFallbackMission;
-  const missionBlocksToRender = showFallbackMission
-    ? fallbackMissionBlocks.map((block, index) => ({ block, index, status: "next" as const }))
-    : numberedBlocks;
+  const missionBlocksToRender: RenderMissionBlock[] = showFallbackMission
+    ? fallbackMissionBlocks.map((block, index) => ({ block, index, status: "next", isFallback: true }))
+    : numberedBlocks.map((entry) => ({ ...entry, isFallback: false }));
   const missionCtaHref = hasMission
     ? `/execute/${firstPendingIndex}`
     : showFallbackMission
@@ -389,7 +402,7 @@ export default function Dashboard() {
 
           {hasMission || showFallbackMission ? (
             <div className="space-y-2">
-              {missionBlocksToRender.map(({ block, index, status }) => {
+              {missionBlocksToRender.map(({ block, index, status, isFallback }) => {
                 const badge = missionStatusBadge(status);
                 return (
                   <div key={`${block.topicId}-${index}`} className="rounded-lg border px-3 py-2.5 bg-muted/20">
@@ -404,10 +417,10 @@ export default function Dashboard() {
                         {badge.label}
                       </Badge>
                     </div>
-                    {"priorityScore" in block && typeof block.priorityScore === "number" ? (
+                    {!isFallback ? (
                       <details className="mt-2 text-xs text-muted-foreground">
                         <summary className="cursor-pointer hover:text-foreground">Why this topic?</summary>
-                        <p className="mt-1 leading-relaxed">{blockReason(block as BlockWithExplanation)}</p>
+                        <p className="mt-1 leading-relaxed">{blockReason(block)}</p>
                       </details>
                     ) : (
                       <p className="mt-2 text-xs text-muted-foreground">
@@ -480,8 +493,8 @@ export default function Dashboard() {
           </div>
 
           <div className="rounded-md border px-3 py-2 text-xs text-muted-foreground">
-            Forecast confidence: {sessionCount < 5 ? "Low" : sessionCount < 14 ? "Medium" : "High"} ·{" "}
-            {sessionCount < 5 ? "Insufficient data (stabilizes after 5–7 days)." : "Using observed behavior history."}
+            Forecast confidence: {historicalSessionCount < COLD_START_SESSION_THRESHOLD ? "Low" : historicalSessionCount < 14 ? "Medium" : "High"} ·{" "}
+            {historicalSessionCount < COLD_START_SESSION_THRESHOLD ? "Insufficient data (stabilizes after 5–7 days)." : "Using observed behavior history."}
           </div>
 
           {(dashboardState === "fallback" || showFallbackMission) && (

@@ -15,10 +15,10 @@ export default function Sessions() {
   const queryClient = useQueryClient();
   const { isHydrated } = useLocalHydration();
   const { data: sessions, isLoading } = useListSessions({ limit: 50 });
-  const loadingSessions = !isHydrated || isLoading;
+  const isLoadingSessions = !isHydrated || isLoading;
   const { timedOut: sessionsTimedOut, resetTimeout: resetSessionsTimeout } = useBoundedLoading(
     "sessions-page",
-    loadingSessions,
+    isLoadingSessions,
   );
 
   useEffect(() => {
@@ -34,7 +34,7 @@ export default function Sessions() {
         <p className="text-muted-foreground">{sessions?.length ?? 0} sessions logged</p>
       </div>
 
-      {loadingSessions && !sessionsTimedOut ? (
+      {isLoadingSessions && !sessionsTimedOut ? (
         <div className="space-y-3">
           {Array.from({ length: 5 }).map((_, i) => (
             <Skeleton key={i} className="h-20" />
@@ -61,7 +61,7 @@ export default function Sessions() {
           {sessions.map((session) => (
             <Card key={session.id} data-testid={`session-${session.id}`}>
               <CardContent className="pt-4 pb-4">
-                <div className="flex items-start justify-between gap-4 flex-wrap sm:flex-nowrap">
+                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
                   <div className="flex items-start gap-3">
                     <div className="mt-0.5 text-muted-foreground">
                       {session.sessionType === "practice" ? (

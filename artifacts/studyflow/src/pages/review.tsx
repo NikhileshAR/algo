@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -52,6 +52,8 @@ interface WeeklyReview {
   skippedPracticeSessions: boolean;
   recoveryDays: number;
 }
+
+const DAYS_IN_WEEK = 7;
 
 const EMPTY_WEEKLY_REVIEW: WeeklyReview = {
   weeklySessions: [],
@@ -122,6 +124,7 @@ function formatHours(minutes: number) {
 }
 
 export default function Review() {
+  const queryClient = useQueryClient();
   const { isHydrated } = useLocalHydration();
   const { data, isLoading, isError } = useQuery<WeeklyReview>({
     queryKey: studyflowQueryKeys.analyticsWeeklyReview(),
@@ -135,10 +138,10 @@ export default function Review() {
     },
     retry: false,
   });
-  const loadingReview = !isHydrated || isLoading;
+  const isLoadingReview = !isHydrated || isLoading;
   const { timedOut: reviewTimedOut, resetTimeout: resetReviewTimeout } = useBoundedLoading(
     "review-weekly",
-    loadingReview,
+    isLoadingReview,
   );
 
   useEffect(() => {
@@ -153,12 +156,12 @@ export default function Review() {
     return `${weekAgo.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${today.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
   })();
 
-  const hasDailySeries = Boolean(data?.dailyHours?.length === 7);
+  const hasDailySeries = Boolean(data?.dailyHours?.length === DAYS_IN_WEEK);
   const hasCoreMetrics = typeof data?.totalMinutes === "number" && typeof data?.daysWithStudy === "number";
   const hasWeeklySessions = (data?.weeklySessions.length ?? 0) > 0;
 
   const viewState: "loading" | "error" | "empty" | "partial" | "ready" | "fallback" =
-    loadingReview
+    isLoadingReview
       ? reviewTimedOut
         ? "fallback"
         : "loading"
@@ -208,7 +211,7 @@ export default function Review() {
               onClick={() => {
                 logObservabilityEvent("retry_requested", { scope: "weekly-review" });
                 resetReviewTimeout();
-                window.location.reload();
+                queryClient.invalidateQueries({ queryKey: studyflowQueryKeys.analyticsWeeklyReview() });
               }}
             >
               Retry weekly review
