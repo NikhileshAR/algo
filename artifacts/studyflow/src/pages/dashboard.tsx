@@ -145,7 +145,15 @@ export default function Dashboard() {
   const hasTopics = (topics?.length ?? 0) > 0;
 
   useEffect(() => {
-    if (!isHydrated || scheduleLoading || scheduleWithControl || !hasTopics || recalculate.isPending || attemptedAutoRecalcRef.current) {
+    const shouldSkipAutoRecalc =
+      !isHydrated ||
+      scheduleLoading ||
+      Boolean(scheduleWithControl) ||
+      !hasTopics ||
+      recalculate.isPending ||
+      attemptedAutoRecalcRef.current;
+
+    if (shouldSkipAutoRecalc) {
       return;
     }
     attemptedAutoRecalcRef.current = true;

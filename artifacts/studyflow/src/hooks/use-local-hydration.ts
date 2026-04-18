@@ -15,16 +15,17 @@ export function useLocalHydration(): HydrationState {
   useEffect(() => {
     let isMounted = true;
 
-    void getDb()
-      .catch((error: unknown) => {
+    void (async () => {
+      try {
+        await getDb();
+        if (!isMounted) return;
+        setState({ isHydrated: true, hydrationError: null });
+      } catch (error: unknown) {
         if (!isMounted) return;
         const message = error instanceof Error ? error.message : "Failed to hydrate local data.";
         setState({ isHydrated: true, hydrationError: message });
-      })
-      .then(() => {
-        if (!isMounted) return;
-        setState((prev) => ({ isHydrated: true, hydrationError: prev.hydrationError }));
-      });
+      }
+    })();
 
     return () => {
       isMounted = false;

@@ -311,14 +311,15 @@ export default function Schedule() {
   const remainingBlocks = scheduleBlocks.slice(currentIndex + 2);
 
   useEffect(() => {
-    if (
+    const shouldSkipAutoRecalc =
       !isHydrated ||
       isLoading ||
       hasSchedule ||
       (topics?.length ?? 0) === 0 ||
       recalculate.isPending ||
-      attemptedAutoRecalcRef.current
-    ) {
+      attemptedAutoRecalcRef.current;
+
+    if (shouldSkipAutoRecalc) {
       return;
     }
     attemptedAutoRecalcRef.current = true;
