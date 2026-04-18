@@ -25,6 +25,8 @@ import * as z from "zod";
 import { useToast } from "@/hooks/use-toast";
 import { useEffect } from "react";
 import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
+import { Link } from "wouter";
+import { useLocalHydration } from "@/hooks/use-local-hydration";
 
 const settingsSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -99,6 +101,7 @@ function CoachingMetricCard({
 export default function Settings() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { isHydrated } = useLocalHydration();
   const { data: profile, isLoading } = useGetStudentProfile();
   const { data: weeklySignals } = useQuery<WeeklySignals>({
     queryKey: ["analytics", "weekly-review", "signals"],
@@ -143,7 +146,7 @@ export default function Settings() {
     );
   }
 
-  if (isLoading) {
+  if (!isHydrated || isLoading) {
     return (
       <div className="space-y-6">
         <Skeleton className="h-8 w-48" />
@@ -152,7 +155,21 @@ export default function Settings() {
     );
   }
 
-  if (!profile) return null;
+  if (!profile) {
+    return (
+      <div className="space-y-4" data-testid="settings-empty-profile">
+        <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
+        <Card>
+          <CardContent className="py-6 space-y-3">
+            <p className="text-sm text-muted-foreground">Profile data isn’t available yet.</p>
+            <Link href="/onboarding">
+              <Button variant="outline">Go to onboarding</Button>
+            </Link>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   const currentDailyHours = weeklySignals ? weeklySignals.totalHours / 7 : profile.capacityScore;
   const previousDailyHours = weeklySignals ? weeklySignals.previousWeekHours / 7 : currentDailyHours;
