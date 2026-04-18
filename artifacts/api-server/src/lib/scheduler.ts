@@ -285,6 +285,8 @@ export function buildSchedulePlan(params: {
   const profile = params.profile;
   const topics = params.topics;
   const masteryStats = computeMasteryVariance(topics.map((topic) => topic.masteryScore));
+  // Warning-only here: route-level integrity guard performs automatic resets.
+  // This check keeps scheduler calls observable even when invoked independently.
   if (masteryStats.variance === 0 && !masteryStats.allZero) {
     logger.warn(
       { topicCount: topics.length, variance: masteryStats.variance },

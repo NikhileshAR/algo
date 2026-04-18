@@ -191,12 +191,7 @@ function parseCSV(text: string): {
     if (masteryRaw === undefined || masteryRaw === "") {
       warnings.push(`Row ${rowNumber}: mastery missing; defaulted to 0.0.`);
     } else {
-      if (!/^\d+(\.\d+)?$/.test(masteryRaw)) {
-        warnings.push(`Row ${rowNumber}: rejected invalid mastery "${masteryRaw}" (must be decimal 0..1).`);
-        rejectedRows++;
-        continue;
-      }
-      const parsedMastery = Number(masteryRaw);
+      const parsedMastery = parseFloat(masteryRaw);
       if (!Number.isFinite(parsedMastery) || parsedMastery < 0 || parsedMastery > 1) {
         warnings.push(`Row ${rowNumber}: rejected out-of-range mastery "${masteryRaw}" (must be 0..1).`);
         rejectedRows++;
