@@ -1,5 +1,5 @@
-import { db, topicsTable, studentProfileTable, schedulesTable } from "@workspace/db";
-import { eq, desc } from "drizzle-orm";
+import { db, topicsTable, studentProfileTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
 import { logger } from "./logger";
 
 export interface ScheduleBlock {
@@ -10,6 +10,7 @@ export interface ScheduleBlock {
   durationMinutes: number;
   priorityScore: number;
   masteryScore: number;
+  explanation: BlockExplanation;
 }
 
 function parseDeps(prerequisites: string): number[] {
@@ -27,38 +28,175 @@ function daysSinceStudied(lastStudiedAt: Date | null): number {
 }
 
 /**
- * Ebbinghaus forgetting curve: R = e^(-t/S)
- * Stability S scales with mastery: well-mastered topics retain longer.
- * mastery=0 → S=3 days, mastery=1 → S=21 days
+ * Ebbinghaus-style retention: R = e^(-t/S)
+ * Stability S scales with mastery: mastery=0 → S=3d, mastery=1 → S=21d.
  */
-function forgettingRetention(mastery: number, days: number): number {
+function forgettingRetention(mastery: number, days: number, decayConstant = 1): number {
   const stability = 3 + mastery * 18;
-  return Math.exp(-days / stability);
+  return Math.exp((-days / Math.max(stability, 0.1)) * decayConstant);
 }
 
-function computePriority(
-  mastery: number,
-  difficulty: number,
-  estimatedHours: number,
+export type SchedulerMode = "adaptive" | "static" | "random";
+
+export interface SchedulerTuning {
+  decayConstant: number;
+  capacitySmoothing: number;
+  growthRateMultiplier: number;
+}
+
+export interface BlockExplanation {
+  priorityContribution: {
+    weightage: number;
+    difficulty: number;
+    lowMastery: number;
+    total: number;
+  };
+  dependencyTriggers: {
+    prerequisites: number[];
+    unlockedDownstreamTopics: number;
+    pressure: number;
+  };
+  decayPressure: {
+    daysSinceStudied: number;
+    retention: number;
+    pressure: number;
+  };
+  activePracticeImbalance: {
+    targetRatio: number;
+    currentRatio: number;
+    pressure: number;
+  };
+  recentPerformanceSignal: {
+    confidence: number;
+    pressure: number;
+  };
+}
+
+export interface PlannerRiskSignal {
+  backlogRisk: number;
+  fallingBehind: boolean;
+  intervention: "none" | "reduced_targets" | "priority_concentration" | "early_reset";
+}
+
+export interface PlannerOutput {
+  date: string;
+  scheduledHours: number;
+  blocks: ScheduleBlock[];
+  daysUntilExam: number;
+  isReset: boolean;
+  riskSignal: PlannerRiskSignal;
+}
+
+type TopicRow = typeof topicsTable.$inferSelect;
+type ProfileRow = typeof studentProfileTable.$inferSelect;
+
+interface PriorityBreakdown {
+  priority: number;
+  explainability: BlockExplanation;
+}
+
+function deterministicHash(seed: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 2 ** 32;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function buildAdjacency(topics: TopicRow[]): Map<number, number[]> {
+  const graph = new Map<number, number[]>();
+  for (const topic of topics) {
+    graph.set(topic.id, []);
+  }
+  for (const topic of topics) {
+    const deps = parseDeps(topic.prerequisites);
+    for (const dep of deps) {
+      const list = graph.get(dep) ?? [];
+      list.push(topic.id);
+      graph.set(dep, list);
+    }
+  }
+  return graph;
+}
+
+function countUnlockedDownstream(topicId: number, graph: Map<number, number[]>): number {
+  const queue = [...(graph.get(topicId) ?? [])];
+  const visited = new Set<number>();
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    for (const next of graph.get(current) ?? []) {
+      if (!visited.has(next)) {
+        queue.push(next);
+      }
+    }
+  }
+  return visited.size;
+}
+
+function computePriorityBreakdown(
+  topic: TopicRow,
+  profile: ProfileRow,
   daysUntilExam: number,
-  disciplineScore: number,
-  lastStudiedAt: Date | null,
-): number {
-  const days = daysSinceStudied(lastStudiedAt);
-  const retention = forgettingRetention(mastery, days);
+  tuning: SchedulerTuning,
+  graph: Map<number, number[]>,
+): PriorityBreakdown {
+  const daysDormant = daysSinceStudied(topic.lastStudiedAt);
+  const retention = forgettingRetention(topic.masteryScore, daysDormant, tuning.decayConstant);
+  const lowMastery = clamp(1 - topic.masteryScore * retention, 0, 1);
+  const weightage = clamp(daysUntilExam > 0 ? topic.estimatedHours / daysUntilExam : topic.estimatedHours, 0, 10);
+  const difficulty = clamp(topic.difficultyLevel / 5, 0.2, 1);
+  const unlockedDownstreamTopics = countUnlockedDownstream(topic.id, graph);
+  const dependencyPressure = clamp(unlockedDownstreamTopics / 5, 0, 1);
+  const decayPressure = clamp(1 - retention, 0, 1);
+  const practicePressure = clamp(profile.activePracticeRatio < 0.35 ? (0.35 - profile.activePracticeRatio) / 0.35 : 0, 0, 1);
+  const performancePressure = clamp(1 - topic.confidenceScore, 0, 1);
+  const disciplineMod = 1 / Math.max(profile.disciplineScore, 0.1);
 
-  // Effective mastery decays if topic hasn't been reviewed
-  const effectiveMastery = mastery * retention;
+  const total = (
+    weightage * 0.3 +
+    difficulty * 0.2 +
+    lowMastery * 0.35 +
+    dependencyPressure * 0.1 +
+    decayPressure * 0.05
+  ) * disciplineMod;
 
-  const urgency = daysUntilExam > 0 ? estimatedHours / daysUntilExam : estimatedHours;
-  const knowledgeGap = 1 - effectiveMastery;
-  const difficultyWeight = difficulty / 5;
-  const discFactor = 1 / Math.max(disciplineScore, 0.1);
-
-  // Recency boost: topics dormant > 7 days get an extra nudge
-  const recencyBoost = days > 7 ? 1 + (days - 7) / 14 : 1;
-
-  return urgency * knowledgeGap * difficultyWeight * discFactor * recencyBoost;
+  return {
+    priority: total,
+    explainability: {
+      priorityContribution: {
+        weightage: Math.round(weightage * 1000) / 1000,
+        difficulty: Math.round(difficulty * 1000) / 1000,
+        lowMastery: Math.round(lowMastery * 1000) / 1000,
+        total: Math.round(total * 1000) / 1000,
+      },
+      dependencyTriggers: {
+        prerequisites: parseDeps(topic.prerequisites),
+        unlockedDownstreamTopics,
+        pressure: Math.round(dependencyPressure * 1000) / 1000,
+      },
+      decayPressure: {
+        daysSinceStudied: daysDormant,
+        retention: Math.round(retention * 1000) / 1000,
+        pressure: Math.round(decayPressure * 1000) / 1000,
+      },
+      activePracticeImbalance: {
+        targetRatio: 0.5,
+        currentRatio: Math.round(profile.activePracticeRatio * 1000) / 1000,
+        pressure: Math.round(practicePressure * 1000) / 1000,
+      },
+      recentPerformanceSignal: {
+        confidence: Math.round(topic.confidenceScore * 1000) / 1000,
+        pressure: Math.round(performancePressure * 1000) / 1000,
+      },
+    },
+  };
 }
 
 function daysUntil(examDate: string): number {
@@ -72,13 +210,157 @@ function geometricCapacity(baseCapacity: number, disciplineScore: number): numbe
   return baseCapacity * (0.6 + 0.4 * disciplineScore);
 }
 
-export async function recalculateSchedule(): Promise<{
-  date: string;
-  scheduledHours: number;
-  blocks: ScheduleBlock[];
-  daysUntilExam: number;
-  isReset: boolean;
-}> {
+function interventionFromRisk(backlogRisk: number): PlannerRiskSignal["intervention"] {
+  if (backlogRisk >= 0.85) return "early_reset";
+  if (backlogRisk >= 0.7) return "priority_concentration";
+  if (backlogRisk >= 0.5) return "reduced_targets";
+  return "none";
+}
+
+function scoreBacklogRisk(
+  profile: ProfileRow,
+  daysUntilExamValue: number,
+  openTopicCount: number,
+): PlannerRiskSignal {
+  const timePressure = daysUntilExamValue <= 0 ? 1 : clamp(1 - daysUntilExamValue / 120, 0, 1);
+  const disciplineDrag = clamp(1 - profile.disciplineScore, 0, 1);
+  const lowCapacity = clamp((2.5 - profile.capacityScore) / 2.5, 0, 1);
+  const breadthPressure = clamp(openTopicCount / 40, 0, 1);
+  const backlogRisk = clamp(
+    timePressure * 0.35 + disciplineDrag * 0.35 + lowCapacity * 0.2 + breadthPressure * 0.1,
+    0,
+    1,
+  );
+  const intervention = interventionFromRisk(backlogRisk);
+  return {
+    backlogRisk: Math.round(backlogRisk * 1000) / 1000,
+    fallingBehind: backlogRisk >= 0.5,
+    intervention,
+  };
+}
+
+export function buildSchedulePlan(params: {
+  profile: ProfileRow;
+  topics: TopicRow[];
+  mode: SchedulerMode;
+  dateSeed: string;
+  staticTopicOrder?: number[];
+  tuning?: SchedulerTuning;
+  forceIntervention?: PlannerRiskSignal["intervention"] | null;
+}): PlannerOutput {
+  const tuning = params.tuning ?? {
+    decayConstant: 1,
+    capacitySmoothing: 0.8,
+    growthRateMultiplier: 1,
+  };
+  const profile = params.profile;
+  const topics = params.topics;
+  const openTopics = topics.filter((t) => !t.isCompleted);
+  const days = daysUntil(profile.examDate);
+  const riskSignal = scoreBacklogRisk(profile, days, openTopics.length);
+  const selectedIntervention = params.forceIntervention ?? riskSignal.intervention;
+
+  const baseHours = geometricCapacity(profile.capacityScore, profile.disciplineScore) * tuning.growthRateMultiplier;
+  let scheduledHours = Math.max(0, baseHours);
+  let isReset = false;
+
+  if (selectedIntervention === "reduced_targets") {
+    scheduledHours *= 0.85;
+  } else if (selectedIntervention === "early_reset") {
+    scheduledHours = Math.max(1.5, scheduledHours * 0.75);
+    isReset = true;
+  }
+
+  const totalMinutes = Math.round(scheduledHours * 60);
+  const graph = buildAdjacency(topics);
+
+  const staticOrderIndex = new Map<number, number>(
+    (params.staticTopicOrder ?? []).map((topicId, index) => [topicId, index]),
+  );
+
+  const scored = openTopics.map((topic) => {
+    const deps = parseDeps(topic.prerequisites);
+    const allDepsComplete = deps.every((depId) => {
+      const dep = topics.find((candidate) => candidate.id === depId);
+      return dep ? dep.masteryScore >= 0.6 || dep.isCompleted : true;
+    });
+
+    const adaptive = computePriorityBreakdown(topic, profile, days, tuning, graph);
+    const randomPriority = deterministicHash(`${params.dateSeed}:${topic.id}`);
+    const staticPriority = staticOrderIndex.has(topic.id)
+      ? 1 / (1 + (staticOrderIndex.get(topic.id) ?? Number.MAX_SAFE_INTEGER))
+      : adaptive.priority;
+
+    let modePriority = adaptive.priority;
+    if (params.mode === "random") {
+      modePriority = randomPriority;
+    } else if (params.mode === "static") {
+      modePriority = staticPriority;
+    }
+
+    return {
+      topic,
+      deps,
+      allDepsComplete,
+      priority: allDepsComplete ? modePriority : 0,
+      explainability: adaptive.explainability,
+    };
+  });
+
+  scored.sort((a, b) => b.priority - a.priority);
+
+  let ranked = scored.filter((s) => s.allDepsComplete);
+  if (selectedIntervention === "priority_concentration" || selectedIntervention === "early_reset") {
+    ranked = ranked.slice(0, Math.max(2, Math.ceil(ranked.length * 0.35)));
+  }
+
+  const blocks: ScheduleBlock[] = [];
+  let usedMinutes = 0;
+
+  for (const row of ranked) {
+    if (usedMinutes >= totalMinutes) break;
+
+    const sessionType: "lecture" | "practice" =
+      profile.activePracticeRatio >= 0.5 && row.topic.masteryScore > 0.3 ? "practice" : "lecture";
+
+    const baseMinutes = Math.min(
+      Math.round(Math.min(row.topic.estimatedHours * 60, 90)),
+      totalMinutes - usedMinutes,
+    );
+    if (baseMinutes < 15) continue;
+
+    blocks.push({
+      topicId: row.topic.id,
+      topicName: row.topic.name,
+      subject: row.topic.subject,
+      sessionType,
+      durationMinutes: baseMinutes,
+      priorityScore: Math.round(row.priority * 1000) / 1000,
+      masteryScore: row.topic.masteryScore,
+      explanation: row.explainability,
+    });
+    usedMinutes += baseMinutes;
+  }
+
+  return {
+    date: params.dateSeed,
+    scheduledHours: Math.round(scheduledHours * 1000) / 1000,
+    blocks,
+    daysUntilExam: days,
+    isReset,
+    riskSignal: {
+      ...riskSignal,
+      intervention: selectedIntervention,
+    },
+  };
+}
+
+export async function recalculateSchedule(options?: {
+  mode?: SchedulerMode;
+  staticTopicOrder?: number[];
+  tuning?: SchedulerTuning;
+  forceIntervention?: PlannerRiskSignal["intervention"] | null;
+}): Promise<PlannerOutput> {
   const [profile] = await db.select().from(studentProfileTable).limit(1);
   if (!profile) {
     return {
@@ -87,68 +369,35 @@ export async function recalculateSchedule(): Promise<{
       blocks: [],
       daysUntilExam: 0,
       isReset: false,
+      riskSignal: { backlogRisk: 0, fallingBehind: false, intervention: "none" },
     };
   }
 
   const topics = await db.select().from(topicsTable);
-  const days = daysUntil(profile.examDate);
+  const today = new Date().toISOString().split("T")[0];
 
-  const scheduledHours = geometricCapacity(profile.capacityScore, profile.disciplineScore);
-  const totalMinutes = Math.round(scheduledHours * 60);
+  const output = buildSchedulePlan({
+    profile,
+    topics,
+    mode: options?.mode ?? "adaptive",
+    dateSeed: today,
+    staticTopicOrder: options?.staticTopicOrder,
+    tuning: options?.tuning,
+    forceIntervention: options?.forceIntervention ?? null,
+  });
 
-  const topicsWithDeps = topics
-    .filter((t) => !t.isCompleted)
-    .map((t) => {
-      const deps = parseDeps(t.prerequisites);
-      const allDepsComplete = deps.every((depId) => {
-        const dep = topics.find((x) => x.id === depId);
-        return dep ? dep.masteryScore >= 0.6 || dep.isCompleted : true;
-      });
-      const priority = allDepsComplete
-        ? computePriority(t.masteryScore, t.difficultyLevel, t.estimatedHours, days, profile.disciplineScore, t.lastStudiedAt)
-        : 0;
-      return { ...t, priority, allDepsComplete };
-    })
-    .sort((a, b) => b.priority - a.priority);
+  logger.info(
+    {
+      blocks: output.blocks.length,
+      scheduledHours: output.scheduledHours,
+      mode: options?.mode ?? "adaptive",
+      risk: output.riskSignal.backlogRisk,
+      intervention: output.riskSignal.intervention,
+    },
+    "Schedule recalculated",
+  );
 
-  const blocks: ScheduleBlock[] = [];
-  let usedMinutes = 0;
-
-  for (const topic of topicsWithDeps) {
-    if (usedMinutes >= totalMinutes) break;
-    if (!topic.allDepsComplete) continue;
-
-    const sessionType: "lecture" | "practice" =
-      profile.activePracticeRatio >= 0.5 && topic.masteryScore > 0.3 ? "practice" : "lecture";
-
-    const baseMinutes = Math.min(
-      Math.round(Math.min(topic.estimatedHours * 60, 90)),
-      totalMinutes - usedMinutes,
-    );
-    if (baseMinutes < 15) continue;
-
-    blocks.push({
-      topicId: topic.id,
-      topicName: topic.name,
-      subject: topic.subject,
-      sessionType,
-      durationMinutes: baseMinutes,
-      priorityScore: topic.priority,
-      masteryScore: topic.masteryScore,
-    });
-
-    usedMinutes += baseMinutes;
-  }
-
-  logger.info({ blocks: blocks.length, scheduledHours }, "Schedule recalculated");
-
-  return {
-    date: new Date().toISOString().split("T")[0],
-    scheduledHours,
-    blocks,
-    daysUntilExam: days,
-    isReset: false,
-  };
+  return output;
 }
 
 export async function applyMasteryUpdate(
@@ -189,16 +438,20 @@ export async function recomputePriorities(): Promise<void> {
   const topics = await db.select().from(topicsTable);
   if (!profile) return;
 
+  const graph = buildAdjacency(topics);
   const days = daysUntil(profile.examDate);
-
+  const tuning: SchedulerTuning = {
+    decayConstant: 1,
+    capacitySmoothing: 0.8,
+    growthRateMultiplier: 1,
+  };
   for (const topic of topics) {
-    const priority = computePriority(
-      topic.masteryScore,
-      topic.difficultyLevel,
-      topic.estimatedHours,
+    const { priority } = computePriorityBreakdown(
+      topic,
+      profile,
       days,
-      profile.disciplineScore,
-      topic.lastStudiedAt,
+      tuning,
+      graph,
     );
     await db
       .update(topicsTable)

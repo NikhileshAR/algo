@@ -1,7 +1,8 @@
 import { Router, type IRouter } from "express";
-import { db, schedulesTable } from "@workspace/db";
+import { db, schedulesTable, topicsTable } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
-import { recalculateSchedule } from "../lib/scheduler";
+import { recalculateSchedule, type SchedulerMode } from "../lib/scheduler";
+import { getCurrentControlSnapshot } from "../lib/control-loop";
 
 const router: IRouter = Router();
 
@@ -11,6 +12,13 @@ function formatSchedule(s: typeof schedulesTable.$inferSelect) {
     blocks: JSON.parse(s.blocks ?? "[]"),
     createdAt: s.createdAt.toISOString(),
   };
+}
+
+function parseMode(raw: unknown): SchedulerMode {
+  if (raw === "static" || raw === "random" || raw === "adaptive") {
+    return raw;
+  }
+  return "adaptive";
 }
 
 router.get("/schedule/today", async (req, res): Promise<void> => {
@@ -24,11 +32,25 @@ router.get("/schedule/today", async (req, res): Promise<void> => {
     .limit(1);
 
   if (existing) {
-    res.json(formatSchedule(existing));
+    const snapshot = await getCurrentControlSnapshot();
+    res.json({
+      ...formatSchedule(existing),
+      control: snapshot,
+    });
     return;
   }
 
-  const scheduleData = await recalculateSchedule();
+  const mode = parseMode(req.query.mode);
+  const snapshot = await getCurrentControlSnapshot();
+  const staticTopicOrder = mode === "static"
+    ? (await db.select().from(topicsTable).orderBy(desc(topicsTable.priorityScore))).map((topic) => topic.id)
+    : undefined;
+  const scheduleData = await recalculateSchedule({
+    mode,
+    staticTopicOrder,
+    tuning: snapshot.calibration.tuning,
+    forceIntervention: snapshot.forecast.riskSignal.intervention,
+  });
 
   const [created] = await db
     .insert(schedulesTable)
@@ -41,11 +63,26 @@ router.get("/schedule/today", async (req, res): Promise<void> => {
     })
     .returning();
 
-  res.json(formatSchedule(created));
+  res.json({
+    ...formatSchedule(created),
+    mode,
+    riskSignal: scheduleData.riskSignal,
+    control: snapshot,
+  });
 });
 
 router.post("/schedule/today", async (req, res): Promise<void> => {
-  const scheduleData = await recalculateSchedule();
+  const mode = parseMode(req.query.mode);
+  const snapshot = await getCurrentControlSnapshot();
+  const staticTopicOrder = mode === "static"
+    ? (await db.select().from(topicsTable).orderBy(desc(topicsTable.priorityScore))).map((topic) => topic.id)
+    : undefined;
+  const scheduleData = await recalculateSchedule({
+    mode,
+    staticTopicOrder,
+    tuning: snapshot.calibration.tuning,
+    forceIntervention: snapshot.forecast.riskSignal.intervention,
+  });
   const today = scheduleData.date;
 
   await db.delete(schedulesTable).where(eq(schedulesTable.date, today));
@@ -61,7 +98,12 @@ router.post("/schedule/today", async (req, res): Promise<void> => {
     })
     .returning();
 
-  res.json(formatSchedule(created));
+  res.json({
+    ...formatSchedule(created),
+    mode,
+    riskSignal: scheduleData.riskSignal,
+    control: snapshot,
+  });
 });
 
 export default router;
