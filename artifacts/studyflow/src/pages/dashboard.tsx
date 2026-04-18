@@ -161,6 +161,9 @@ export default function Dashboard() {
     });
   }, [scheduleBlocks, completedMinutes]);
 
+  // Index of first incomplete block (for focus-mode entry)
+  const firstPendingIndex = numberedBlocks.find((nb) => nb.status !== "done")?.index ?? 0;
+
   if (profileLoading || scheduleLoading) {
     return (
       <div className="space-y-4">
@@ -260,9 +263,9 @@ export default function Dashboard() {
             })}
           </div>
 
-          <Link href="/schedule">
+          <Link href={`/execute/${firstPendingIndex}`}>
             <Button className="w-full" data-testid="button-open-schedule-flow">
-              Open guided execution flow
+              Start focused execution
               <ArrowRight className="h-4 w-4 ml-2" />
             </Button>
           </Link>

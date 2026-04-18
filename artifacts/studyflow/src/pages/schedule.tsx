@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect, useMemo } from "react";
+import { Link, useLocation } from "wouter";
 import {
   useGetTodaySchedule,
   useRecalculateSchedule,
@@ -123,6 +124,7 @@ function getSessionHint(
 
 export default function Schedule() {
   const queryClient = useQueryClient();
+  const [, navigate] = useLocation();
   const { toast } = useToast();
   const [logOpen, setLogOpen] = useState(false);
   const [selectedBlock, setSelectedBlock] = useState<{
@@ -407,16 +409,26 @@ export default function Schedule() {
                               Stop & Log
                             </Button>
                           ) : (
-                            <Button
-                              variant="outline"
-                              className="min-h-[44px] px-3 text-sm"
-                              onClick={() => startTimer({ topicId: block.topicId, topicName: block.topicName, sessionType: block.sessionType }, i)}
-                              disabled={hasOtherActive}
-                              data-testid={`button-start-${i}`}
-                            >
-                              <Play className="h-3.5 w-3.5 mr-1 fill-current" />
-                              Start
-                            </Button>
+                            <>
+                              <Button
+                                className="min-h-[44px] px-3 text-sm"
+                                onClick={() => navigate(`/execute/${i}`)}
+                                disabled={hasOtherActive}
+                                data-testid={`button-focus-${i}`}
+                              >
+                                <Play className="h-3.5 w-3.5 mr-1 fill-current" />
+                                Focus mode
+                              </Button>
+                              <Button
+                                variant="outline"
+                                className="min-h-[44px] px-3 text-sm"
+                                onClick={() => startTimer({ topicId: block.topicId, topicName: block.topicName, sessionType: block.sessionType }, i)}
+                                disabled={hasOtherActive}
+                                data-testid={`button-start-${i}`}
+                              >
+                                Quick timer
+                              </Button>
+                            </>
                           )}
                           {!isThisActive && (
                             <Button
