@@ -37,6 +37,9 @@ type ExtendedSchedule = DailySchedule & {
 };
 
 const EXPLANATION_DISPLAY_THRESHOLD = 0.5;
+const STRONG_MOMENTUM_MINUTES = 90;
+const ALMOST_THERE_MINUTES = 60;
+const MIN_CATCHUP_HOURS = 0.5;
 
 type BlockWithExplanation = DailySchedule["blocks"][number] & {
   explanation?: {
@@ -61,8 +64,8 @@ function formatHoursFromMinutes(totalMinutes: number): string {
 
 function missionMomentumLabel(completion: number, completedMinutes: number, remainingMinutes: number): string {
   if (completion >= 100) return "Mission complete";
-  if (completedMinutes >= 90) return "Strong momentum";
-  if (completedMinutes > 0 && remainingMinutes <= 60) return "Almost there";
+  if (completedMinutes >= STRONG_MOMENTUM_MINUTES) return "Strong momentum";
+  if (completedMinutes > 0 && remainingMinutes <= ALMOST_THERE_MINUTES) return "Almost there";
   if (completedMinutes > 0) return "In motion";
   return "Ready to begin";
 }
@@ -146,7 +149,7 @@ export default function Dashboard() {
 
   const gapHours = scheduleWithControl?.control?.performanceGap?.studyHoursDeviation ?? 0;
   const fellShortHours = gapHours < 0 ? Math.abs(gapHours) : 0;
-  const suggestedCatchupHours = Math.max(0.5, Math.round((fellShortHours > 0 ? fellShortHours : 0.5) * 10) / 10);
+  const suggestedCatchupHours = Math.max(MIN_CATCHUP_HOURS, Math.round(fellShortHours * 10) / 10);
   const intervention = scheduleWithControl?.riskSignal?.intervention ?? scheduleWithControl?.control?.forecast?.riskSignal?.intervention;
 
   const numberedBlocks = useMemo(() => {

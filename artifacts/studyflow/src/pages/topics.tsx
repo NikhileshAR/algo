@@ -60,6 +60,7 @@ const topicSchema = z.object({
 });
 
 const SUBJECTS = ["Mathematics", "Physics", "Chemistry", "Biology", "History", "Economics", "English", "Computer Science", "Other"];
+const TARGET_MASTERY_THRESHOLD = 0.8;
 
 function CurriculumForecast({ topics, summary }: {
   topics: Array<{ estimatedHours: number; masteryScore: number; isCompleted: boolean }>;
@@ -77,9 +78,10 @@ function CurriculumForecast({ topics, summary }: {
   const projectedMastery = Math.min(1, avgMastery + hoursRemaining * masteryGainPerHour);
   const projectedPercent = Math.round(projectedMastery * 100);
   const currentPercent = Math.round(avgMastery * 100);
-  const onTrack = projectedMastery >= 0.8;
+  const onTrack = projectedMastery >= TARGET_MASTERY_THRESHOLD;
+  const masteryGap = Math.max(TARGET_MASTERY_THRESHOLD - avgMastery, 0);
   const recommendedDailyHours = totalEstimatedHours > 0 && daysLeft > 0
-    ? Math.max((totalEstimatedHours * (0.8 - avgMastery)) / daysLeft, 0)
+    ? (totalEstimatedHours * masteryGap) / daysLeft
     : 0;
   const additionalDailyHours = Math.max(0, recommendedDailyHours - dailyHours);
   const examDateStr = new Date(summary.examDate).toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -93,7 +95,9 @@ function CurriculumForecast({ topics, summary }: {
     action = "Keep this pace and protect your daily consistency.";
   } else {
     verdict = "At your current pace, you may not complete the syllabus.";
-    action = `You need about +${Math.max(0.5, Math.round(additionalDailyHours * 10) / 10).toFixed(1)} hours/day to stay on track.`;
+    const roundedGap = Math.round(additionalDailyHours * 10) / 10;
+    const recommendedGap = Math.max(roundedGap, 0);
+    action = `You need about +${recommendedGap.toFixed(1)} hours/day to stay on track.`;
   }
   return (
     <Card className={onTrack ? "border-emerald-200 bg-emerald-50/50" : "border-amber-200 bg-amber-50/40"}>

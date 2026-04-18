@@ -8,6 +8,7 @@ import {
 } from "../lib/control-loop";
 
 const router: IRouter = Router();
+const CONSISTENCY_DROP_TOLERANCE_HOURS = 0.3;
 
 /**
  * GET /api/analytics/velocity
@@ -162,19 +163,20 @@ router.get("/analytics/weekly-review", async (_req, res): Promise<void> => {
 
   const firstHalfHours = dailyHours.slice(0, 3).reduce((sum, d) => sum + d.hours, 0);
   const secondHalfHours = dailyHours.slice(3).reduce((sum, d) => sum + d.hours, 0);
-  const consistencyDroppedMidWeek = secondHalfHours + 0.3 < firstHalfHours;
+  const consistencyDroppedMidWeek = secondHalfHours + CONSISTENCY_DROP_TOLERANCE_HOURS < firstHalfHours;
   const skippedPracticeSessions = practiceCount === 0 && lectureCount > 0;
 
-  let recoveryDays = 0;
+  const completedRecoveryBreaks: number[] = [];
   let currentBreak = 0;
   for (const day of dailyHours) {
     if (day.minutes === 0) {
       currentBreak += 1;
     } else if (currentBreak > 0) {
-      recoveryDays = currentBreak;
-      break;
+      completedRecoveryBreaks.push(currentBreak);
+      currentBreak = 0;
     }
   }
+  const mostRecentBreakLength = completedRecoveryBreaks.at(-1) ?? 0;
 
   res.json({
     weeklySessions: weeklySessions.map((s) => ({
@@ -198,7 +200,7 @@ router.get("/analytics/weekly-review", async (_req, res): Promise<void> => {
     dailyHours,
     consistencyDroppedMidWeek,
     skippedPracticeSessions,
-    recoveryDays,
+    recoveryDays: mostRecentBreakLength,
     neglectedTopics,
     lowestMastery,
     averageMastery: avgMastery,

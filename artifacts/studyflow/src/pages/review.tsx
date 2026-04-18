@@ -98,7 +98,7 @@ export default function Review() {
           <CardContent className="space-y-1">
             <p className="text-2xl font-bold">{formatHours(data.totalMinutes)}</p>
             <p className="text-xs text-muted-foreground">
-              {hoursDelta >= 0 ? `+${hoursDelta.toFixed(1)}h vs last week` : `${hoursDelta.toFixed(1)}h vs last week`}
+              {`${hoursDelta > 0 ? "+" : ""}${hoursDelta.toFixed(1)}h vs last week`}
             </p>
             <p className="text-xs text-muted-foreground">{data.weeklySessions.length} sessions across {data.daysWithStudy}/7 days</p>
           </CardContent>

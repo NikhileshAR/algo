@@ -138,6 +138,8 @@ export default function Schedule() {
   const [elapsed, setElapsed] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const currentBlockRef = useRef<HTMLDivElement | null>(null);
+  const hasInitialFocusRef = useRef(false);
+  const lastFocusedTimerBlockRef = useRef<number | null>(null);
 
   const { data: schedule, isLoading } = useGetTodaySchedule();
   const { data: topics } = useListTopics();
@@ -306,8 +308,18 @@ export default function Schedule() {
   const remainingBlocks = scheduleBlocks.slice(currentIndex + 2);
 
   useEffect(() => {
-    currentBlockRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [currentIndex]);
+    if (!currentBlockRef.current) return;
+    const timerBlockChanged = activeTimer?.blockIndex !== undefined && activeTimer.blockIndex !== lastFocusedTimerBlockRef.current;
+    const shouldFocus = !hasInitialFocusRef.current || timerBlockChanged;
+    if (!shouldFocus) return;
+    if (!hasInitialFocusRef.current) {
+      hasInitialFocusRef.current = true;
+    }
+    if (activeTimer?.blockIndex !== undefined) {
+      lastFocusedTimerBlockRef.current = activeTimer.blockIndex;
+    }
+    currentBlockRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [activeTimer?.blockIndex]);
 
   return (
     <div className="space-y-6" data-testid="schedule-page">

@@ -44,10 +44,15 @@ type WeeklySignals = {
   previousWeekLectureCount: number;
 };
 
-function formatTrend(delta: number): { label: string; Icon: typeof ArrowUpRight; className: string } {
-  if (delta > 0.01) return { label: "Improving", Icon: ArrowUpRight, className: "text-emerald-700" };
-  if (delta < -0.01) return { label: "Dropping", Icon: ArrowDownRight, className: "text-amber-700" };
-  return { label: "Steady", Icon: Minus as typeof ArrowUpRight, className: "text-muted-foreground" };
+const TREND_THRESHOLD = 0.01;
+const LONG_FOCUS_HOURS_THRESHOLD = 4;
+const STABLE_CONSISTENCY_THRESHOLD = 0.7;
+const GOOD_PRACTICE_RATIO_THRESHOLD = 0.35;
+
+function formatTrend(delta: number): { label: string; Icon: typeof ArrowUpRight | typeof ArrowDownRight | typeof Minus; className: string } {
+  if (delta > TREND_THRESHOLD) return { label: "Improving", Icon: ArrowUpRight, className: "text-emerald-700" };
+  if (delta < -TREND_THRESHOLD) return { label: "Dropping", Icon: ArrowDownRight, className: "text-amber-700" };
+  return { label: "Steady", Icon: Minus, className: "text-muted-foreground" };
 }
 
 function CoachingMetricCard({
@@ -251,7 +256,7 @@ export default function Settings() {
             valueLabel={`${currentDailyHours.toFixed(1)}h/day`}
             trendDelta={currentDailyHours - previousDailyHours}
             description="How much focused study time you can sustain each day"
-            interpretation={currentDailyHours >= 4 ? "You can hold long focus blocks." : "Build stamina with shorter daily blocks."}
+            interpretation={currentDailyHours >= LONG_FOCUS_HOURS_THRESHOLD ? "You can hold long focus blocks." : "Build stamina with shorter daily blocks."}
           />
 
           <CoachingMetricCard
@@ -261,7 +266,7 @@ export default function Settings() {
             valueLabel={`${Math.round(consistency * 100)}% consistency`}
             trendDelta={consistency - previousConsistency}
             description="How often you actually show up for planned study"
-            interpretation={consistency >= 0.7 ? "Your routine is stable." : "You’re slipping off your plan mid-week."}
+            interpretation={consistency >= STABLE_CONSISTENCY_THRESHOLD ? "Your routine is stable." : "You’re slipping off your plan mid-week."}
           />
 
           <CoachingMetricCard
@@ -271,7 +276,7 @@ export default function Settings() {
             valueLabel={`${Math.round(currentPracticeRatio * 100)}% solving`}
             trendDelta={currentPracticeRatio - previousPracticeRatio}
             description="Your practice share across this week’s sessions"
-            interpretation={currentPracticeRatio >= 0.35 ? "Good solve-heavy mix." : "You’re watching more than solving."}
+            interpretation={currentPracticeRatio >= GOOD_PRACTICE_RATIO_THRESHOLD ? "Good solve-heavy mix." : "You’re watching more than solving."}
           />
         </CardContent>
       </Card>
