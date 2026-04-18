@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   ResponsiveContainer,
   BarChart,
@@ -20,6 +22,9 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { useLocalHydration } from "@/hooks/use-local-hydration";
+import { useBoundedLoading } from "@/hooks/use-bounded-loading";
+import { logObservabilityEvent } from "@/lib/observability";
+import { studyflowQueryKeys } from "@/lib/query-keys";
 
 interface WeeklyReview {
   weeklySessions: Array<{
@@ -119,7 +124,7 @@ function formatHours(minutes: number) {
 export default function Review() {
   const { isHydrated } = useLocalHydration();
   const { data, isLoading, isError } = useQuery<WeeklyReview>({
-    queryKey: ["analytics", "weekly-review"],
+    queryKey: studyflowQueryKeys.analyticsWeeklyReview(),
     queryFn: async () => {
       const response = await fetch("/api/analytics/weekly-review");
       if (!response.ok) {
@@ -130,6 +135,17 @@ export default function Review() {
     },
     retry: false,
   });
+  const loadingReview = !isHydrated || isLoading;
+  const { timedOut: reviewTimedOut, resetTimeout: resetReviewTimeout } = useBoundedLoading(
+    "review-weekly",
+    loadingReview,
+  );
+
+  useEffect(() => {
+    if (reviewTimedOut) {
+      logObservabilityEvent("fallback_triggered", { scope: "weekly-review", reason: "timeout" });
+    }
+  }, [reviewTimedOut]);
 
   const weekStr = (() => {
     const today = new Date();
@@ -137,14 +153,22 @@ export default function Review() {
     return `${weekAgo.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${today.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
   })();
 
-  const viewState: "loading" | "error" | "empty" | "success" =
-    !isHydrated || isLoading
-      ? "loading"
+  const hasDailySeries = Boolean(data?.dailyHours?.length === 7);
+  const hasCoreMetrics = typeof data?.totalMinutes === "number" && typeof data?.daysWithStudy === "number";
+  const hasWeeklySessions = (data?.weeklySessions.length ?? 0) > 0;
+
+  const viewState: "loading" | "error" | "empty" | "partial" | "ready" | "fallback" =
+    loadingReview
+      ? reviewTimedOut
+        ? "fallback"
+        : "loading"
       : isError
         ? "error"
-        : !data || data.weeklySessions.length === 0
+        : !data || !hasWeeklySessions
           ? "empty"
-          : "success";
+          : !hasDailySeries || !hasCoreMetrics
+            ? "partial"
+            : "ready";
 
   if (viewState === "loading") {
     return (
@@ -156,7 +180,7 @@ export default function Review() {
     );
   }
 
-  const reviewData: WeeklyReview = viewState === "success" && data ? data : EMPTY_WEEKLY_REVIEW;
+  const reviewData: WeeklyReview = (viewState === "ready" || viewState === "partial") && data ? data : EMPTY_WEEKLY_REVIEW;
   const hoursDelta = reviewData.totalHours - reviewData.previousWeekHours;
   const consistencyDelta = reviewData.daysWithStudy - reviewData.previousWeekDaysWithStudy;
   const hasAnyStudy = reviewData.totalMinutes > 0;
@@ -171,14 +195,38 @@ export default function Review() {
       {viewState === "error" && (
         <Card>
           <CardContent className="py-3 text-sm text-muted-foreground">
-            We couldn’t load this week’s data. Showing safe defaults for now.
+            We couldn’t load this week’s data. Retry to restore the real weekly report.
+          </CardContent>
+        </Card>
+      )}
+      {viewState === "fallback" && (
+        <Card>
+          <CardContent className="py-3 text-sm text-muted-foreground space-y-3">
+            <p>Weekly review is taking longer than expected, so fallback mode is active.</p>
+            <Button
+              variant="outline"
+              onClick={() => {
+                logObservabilityEvent("retry_requested", { scope: "weekly-review" });
+                resetReviewTimeout();
+                window.location.reload();
+              }}
+            >
+              Retry weekly review
+            </Button>
           </CardContent>
         </Card>
       )}
       {viewState === "empty" && (
         <Card>
           <CardContent className="py-3 text-sm text-muted-foreground">
-            No data this week yet.
+            No data yet. Complete your first session to start weekly insights.
+          </CardContent>
+        </Card>
+      )}
+      {viewState === "partial" && (
+        <Card>
+          <CardContent className="py-3 text-sm text-muted-foreground">
+            Partial data available. Some weekly signals are still being reconstructed.
           </CardContent>
         </Card>
       )}

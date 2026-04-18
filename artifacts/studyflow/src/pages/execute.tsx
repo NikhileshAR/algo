@@ -4,11 +4,6 @@ import {
   useGetTodaySchedule,
   useLogSession,
   useListSessions,
-  getGetTodayScheduleQueryKey,
-  getListSessionsQueryKey,
-  getGetDashboardSummaryQueryKey,
-  getGetPriorityTopicsQueryKey,
-  getListTopicsQueryKey,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -50,6 +45,7 @@ import {
 } from "@/lib/execution-engine";
 import { recordManualTelemetryEvent } from "@/lib/local-db/bridge";
 import { runFeedbackLoop } from "@/lib/feedback-loop";
+import { invalidateAfterSessionLog } from "@/lib/query-invalidation";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -318,11 +314,7 @@ export default function Execute() {
       },
       {
         onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() });
-          queryClient.invalidateQueries({ queryKey: getListSessionsQueryKey() });
-          queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
-          queryClient.invalidateQueries({ queryKey: getGetPriorityTopicsQueryKey() });
-          queryClient.invalidateQueries({ queryKey: getListTopicsQueryKey() });
+          invalidateAfterSessionLog(queryClient);
 
           void recordManualTelemetryEvent({
             topic: block.topicName,
