@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useMemo } from "react";
 import {
   useGetTodaySchedule,
   useRecalculateSchedule,
@@ -71,6 +71,22 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function isIsoDayMatch(studiedAt: unknown, day: string): boolean {
+  return typeof studiedAt === "string" && studiedAt.startsWith(day);
+}
+
+const STUDY_DAY_START_HOUR = 6;
+const STUDY_DAY_DURATION_HOURS = 16;
+const ON_TRACK_GRACE_MINUTES = 10;
+const MOMENTUM_THRESHOLD_SECONDS = 10 * 60;
+
+function getMomentumLabel(active: boolean, elapsedSeconds: number, completionPct: number, completedMinutes: number): string {
+  if (active && elapsedSeconds >= MOMENTUM_THRESHOLD_SECONDS) return "Building momentum";
+  if (completionPct >= 100) return "Mission complete";
+  if (completedMinutes > 0) return "In motion";
+  return "Ready to start";
+}
+
 function getSessionHint(
   mastery: number,
   sessionType: "lecture" | "practice",
@@ -122,7 +138,7 @@ export default function Schedule() {
 
   const { data: schedule, isLoading } = useGetTodaySchedule();
   const { data: topics } = useListTopics();
-  const { data: sessions } = useListSessions({ limit: 200 }, { query: { refetchInterval: 10000 } });
+  const { data: sessions } = useListSessions({ limit: 200 });
   const recalculate = useRecalculateSchedule();
   const logSession = useLogSession();
 
@@ -251,9 +267,12 @@ export default function Schedule() {
   const scheduleHours = typeof schedule?.scheduledHours === "number" ? schedule.scheduledHours : 0;
   const hasSchedule = Boolean(schedule);
   const missionTotalMinutes = Math.max(0, Math.round(scheduleHours * 60));
-  const loggedMinutesToday = (sessions ?? [])
-    .filter((s) => s.studiedAt.slice(0, 10) === todayIso)
-    .reduce((sum, s) => sum + s.durationMinutes, 0);
+  const loggedMinutesToday = useMemo(
+    () => (sessions ?? [])
+      .filter((s) => isIsoDayMatch(s.studiedAt, todayIso))
+      .reduce((sum, s) => sum + s.durationMinutes, 0),
+    [sessions, todayIso],
+  );
   const missionCompletedMinutes = Math.max(0, loggedMinutesToday + (activeTimer ? elapsed / 60 : 0));
   const missionCompletion = missionTotalMinutes > 0
     ? Math.min(100, Math.round((missionCompletedMinutes / missionTotalMinutes) * 100))
@@ -261,16 +280,14 @@ export default function Schedule() {
   const missionRemainingMinutes = Math.max(0, Math.round(missionTotalMinutes - missionCompletedMinutes));
   const now = new Date();
   const dayMinutes = now.getHours() * 60 + now.getMinutes();
-  const dayProgress = clamp((dayMinutes - 6 * 60) / (16 * 60), 0, 1);
+  const dayProgress = clamp(
+    (dayMinutes - STUDY_DAY_START_HOUR * 60) / (STUDY_DAY_DURATION_HOURS * 60),
+    0,
+    1,
+  );
   const expectedByNow = missionTotalMinutes * dayProgress;
-  const onTrack = missionCompletedMinutes + 10 >= expectedByNow;
-  const momentumLabel = activeTimer && elapsed >= 10 * 60
-    ? "Building momentum"
-    : missionCompletion >= 100
-      ? "Mission complete"
-      : missionCompletedMinutes > 0
-        ? "In motion"
-        : "Ready to start";
+  const onTrack = missionCompletedMinutes + ON_TRACK_GRACE_MINUTES >= expectedByNow;
+  const momentumLabel = getMomentumLabel(Boolean(activeTimer), elapsed, missionCompletion, missionCompletedMinutes);
 
   return (
     <div className="space-y-6" data-testid="schedule-page">
@@ -314,7 +331,10 @@ export default function Schedule() {
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Today’s Mission</CardTitle>
               <CardDescription>
-                Target {scheduleHours.toFixed(1)}h · {missionRemainingMinutes}m left · {onTrack ? "On track" : "Behind pace"}
+                Target {scheduleHours.toFixed(1)}h · {missionRemainingMinutes}m left ·{" "}
+                <span className={onTrack ? "text-emerald-700 font-medium" : "text-amber-700 font-medium"}>
+                  {onTrack ? "On track ✓" : "Behind pace ⚠"}
+                </span>
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">

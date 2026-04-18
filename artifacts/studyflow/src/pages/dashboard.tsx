@@ -4,7 +4,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   useGetStudentProfile,
   getGetStudentProfileQueryKey,
-  useGetTodaySchedule,
   useListSessions,
   useListTopics,
   type DailySchedule,
@@ -37,6 +36,8 @@ type ExtendedSchedule = DailySchedule & {
   control?: ControlSnapshot;
 };
 
+const EXPLANATION_DISPLAY_THRESHOLD = 0.5;
+
 type BlockWithExplanation = DailySchedule["blocks"][number] & {
   explanation?: {
     priorityContribution?: { lowMastery?: number; weightage?: number };
@@ -50,6 +51,24 @@ function toIsoDay(): string {
   return new Date().toISOString().split("T")[0];
 }
 
+function isIsoDayMatch(studiedAt: unknown, day: string): boolean {
+  return typeof studiedAt === "string" && studiedAt.startsWith(day);
+}
+
+function formatHoursFromMinutes(totalMinutes: number): string {
+  return (Math.round((totalMinutes / 60) * 10) / 10).toFixed(1);
+}
+
+function missionStatusBadge(status: "done" | "continue" | "now" | "next"): {
+  variant: "default" | "secondary" | "outline";
+  label: string;
+} {
+  if (status === "done") return { variant: "secondary", label: "Done" };
+  if (status === "continue") return { variant: "default", label: "Continue now" };
+  if (status === "now") return { variant: "default", label: "Do now" };
+  return { variant: "outline", label: "Up next" };
+}
+
 function interventionMessage(intervention: RiskSignal["intervention"] | undefined): string {
   if (intervention === "early_reset") return "Tomorrow auto-adjusts with a lighter recovery load.";
   if (intervention === "priority_concentration") return "Tomorrow auto-focuses on fewer high-impact topics.";
@@ -61,17 +80,17 @@ function blockReason(block: BlockWithExplanation): string {
   const ex = block.explanation;
   if (!ex) return `Selected by scheduler priority (${Math.round(block.priorityScore * 100)} score).`;
 
-  const lowMastery = ex.priorityContribution?.lowMastery ?? 0;
+  const lowMasteryContribution = ex.priorityContribution?.lowMastery ?? 0;
   const decay = ex.decayPressure?.pressure ?? 0;
   const dependency = ex.dependencyTriggers?.pressure ?? 0;
   const performance = ex.recentPerformanceSignal?.pressure ?? 0;
 
-  if (lowMastery >= 0.5) return "Why this topic? Your mastery signal is still developing here, so this block has high learning upside.";
-  if (decay >= 0.5) return "Why this topic? Retention is decaying, so this was pulled forward to prevent forgetting.";
-  if (dependency >= 0.5) return "Why this topic? It unlocks downstream topics and improves overall coverage.";
-  if (performance >= 0.5) return "Why this topic? Recent performance confidence is lower, so the system is reinforcing it now.";
+  if (lowMasteryContribution >= EXPLANATION_DISPLAY_THRESHOLD) return "Your mastery signal is still developing here, so this block has high learning upside.";
+  if (decay >= EXPLANATION_DISPLAY_THRESHOLD) return "Retention is decaying, so this was pulled forward to prevent forgetting.";
+  if (dependency >= EXPLANATION_DISPLAY_THRESHOLD) return "It unlocks downstream topics and improves overall coverage.";
+  if (performance >= EXPLANATION_DISPLAY_THRESHOLD) return "Recent performance confidence is lower, so the system is reinforcing it now.";
 
-  return "Why this topic? It is currently one of the highest-priority blocks based on mastery, urgency, and readiness.";
+  return "It is currently one of the highest-priority blocks based on mastery, urgency, and readiness.";
 }
 
 export default function Dashboard() {
@@ -80,11 +99,10 @@ export default function Dashboard() {
   const { data: profile, isError: profileError, isLoading: profileLoading } = useGetStudentProfile({
     query: { queryKey: getGetStudentProfileQueryKey(), retry: false },
   });
-  const { data: schedule, isLoading: scheduleLoading } = useGetTodaySchedule();
   const { data: topics } = useListTopics();
-  const { data: sessions } = useListSessions({ limit: 200 }, { query: { refetchInterval: 10000 } });
+  const { data: sessions } = useListSessions({ limit: 200 });
 
-  const { data: scheduleWithControl } = useQuery<ExtendedSchedule>({
+  const { data: scheduleWithControl, isLoading: scheduleLoading } = useQuery<ExtendedSchedule>({
     queryKey: ["schedule", "today", "extended"],
     queryFn: () => fetch("/api/schedule/today").then((r) => r.json()),
     refetchInterval: 10000,
@@ -97,16 +115,16 @@ export default function Dashboard() {
   }, [profileLoading, profileError, setLocation]);
 
   const today = toIsoDay();
+  const schedule = scheduleWithControl;
   const scheduleBlocks = (Array.isArray(schedule?.blocks) ? schedule.blocks : []) as BlockWithExplanation[];
-  const totalMinutes = Math.max(
-    0,
-    Math.round((schedule?.scheduledHours ?? 0) * 60) || scheduleBlocks.reduce((sum, b) => sum + b.durationMinutes, 0),
-  );
+  const totalMinutes = typeof schedule?.scheduledHours === "number"
+    ? Math.max(0, Math.round(schedule.scheduledHours * 60))
+    : scheduleBlocks.reduce((sum, b) => sum + b.durationMinutes, 0);
 
   const completedMinutes = useMemo(() => {
     if (!sessions) return 0;
     return sessions
-      .filter((s) => s.studiedAt.slice(0, 10) === today)
+      .filter((s) => isIsoDayMatch(s.studiedAt, today))
       .reduce((sum, s) => sum + s.durationMinutes, 0);
   }, [sessions, today]);
 
@@ -117,9 +135,7 @@ export default function Dashboard() {
     Boolean(scheduleWithControl?.control?.forecast?.riskSignal?.fallingBehind) ||
     Boolean(scheduleWithControl?.riskSignal?.fallingBehind);
 
-  const expectedCoverage = Math.round(
-    ((scheduleWithControl?.control?.forecast?.expectedCoverageByExamDate ?? 0) as number) * 100,
-  );
+  const expectedCoverage = Math.round((scheduleWithControl?.control?.forecast?.expectedCoverageByExamDate ?? 0) * 100);
 
   const gapHours = scheduleWithControl?.control?.performanceGap?.studyHoursDeviation ?? 0;
   const fellShortHours = gapHours < 0 ? Math.abs(gapHours) : 0;
@@ -136,8 +152,9 @@ export default function Dashboard() {
       }
 
       if (!assignedCurrent) {
+        const hasStartedCurrent = spent > 0;
         assignedCurrent = true;
-        return { block, index, status: "now" as const };
+        return { block, index, status: hasStartedCurrent ? "continue" as const : "now" as const };
       }
 
       return { block, index, status: "next" as const };
@@ -211,7 +228,7 @@ export default function Dashboard() {
             Execute now
           </CardTitle>
           <CardDescription>
-            Target {Math.round((totalMinutes / 60) * 10) / 10}h · {remainingMinutes} min left · {paceBehind ? "Behind pace" : "On track"}
+            Target {formatHoursFromMinutes(totalMinutes)}h · {remainingMinutes} min left · {paceBehind ? "Behind pace" : "On track"}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -219,8 +236,10 @@ export default function Dashboard() {
           <div className="text-xs text-muted-foreground">{completion}% complete</div>
 
           <div className="space-y-2">
-            {numberedBlocks.map(({ block, index, status }) => (
-              <div key={`${block.topicId}-${index}`} className="rounded-lg border px-3 py-2.5 bg-muted/20">
+            {numberedBlocks.map(({ block, index, status }) => {
+              const badge = missionStatusBadge(status);
+              return (
+                <div key={`${block.topicId}-${index}`} className="rounded-lg border px-3 py-2.5 bg-muted/20">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-sm font-medium truncate">
@@ -228,8 +247,8 @@ export default function Dashboard() {
                     </p>
                     <p className="text-xs text-muted-foreground">{block.durationMinutes}m · {block.sessionType}</p>
                   </div>
-                  <Badge variant={status === "done" ? "secondary" : status === "now" ? "default" : "outline"}>
-                    {status === "done" ? "Done" : status === "now" ? "Do now" : "Up next"}
+                  <Badge variant={badge.variant}>
+                    {badge.label}
                   </Badge>
                 </div>
                 <details className="mt-2 text-xs text-muted-foreground">
@@ -237,7 +256,8 @@ export default function Dashboard() {
                   <p className="mt-1 leading-relaxed">{blockReason(block)}</p>
                 </details>
               </div>
-            ))}
+              );
+            })}
           </div>
 
           <Link href="/schedule">
@@ -254,20 +274,20 @@ export default function Dashboard() {
           <CardTitle className="text-sm">Behavior signals</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
-          <div className="flex items-start gap-2">
+          <div className="flex items-start gap-2" role="status" aria-live="polite">
             <Clock3 className="h-4 w-4 mt-0.5 text-muted-foreground" />
             <span>Forecast: <span className="font-medium">{paceBehind ? "Behind pace" : "On track"}</span>.</span>
           </div>
 
           {fellShortHours > 0 && (
-            <div className="flex items-start gap-2">
+            <div className="flex items-start gap-2" role="status" aria-live="polite">
               <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-600" />
-              <span>Performance gap: You fell short by <span className="font-medium">{fellShortHours.toFixed(1)}h</span> today.</span>
+              <span>Performance gap: You fell short by <span className="font-medium">{fellShortHours.toFixed(1)}h</span> in the latest tracking window.</span>
             </div>
           )}
 
           {(scheduleWithControl?.riskSignal?.backlogRisk ?? 0) >= 0.5 && (
-            <div className="flex items-start gap-2">
+            <div className="flex items-start gap-2" role="status" aria-live="polite">
               <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-600" />
               <span>Risk: If this continues, expected coverage trends toward <span className="font-medium">{expectedCoverage}%</span>.</span>
             </div>
