@@ -19,7 +19,7 @@ Rules:
 - suggestedTopics must have 5–20 items covering the subjects provided.
 - difficultyLevel is an integer 1–5.
 - estimatedHours is a realistic positive number (e.g. 10–80 for a major topic).
-- masteryScore represents the student's initial mastery: 0.05 for beginners, 0.15 for intermediate, 0.30 for advanced.
+- masteryScore must always be 0.0 for onboarding suggestions (no inferred mastery without diagnostic testing).
 - studyStrategy is a 2–4 sentence paragraph describing the recommended approach.
 - scheduleTone is one of "aggressive", "balanced", or "relaxed" based on time until exam and daily hours.`;
 

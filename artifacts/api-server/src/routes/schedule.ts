@@ -3,6 +3,7 @@ import { db, schedulesTable, topicsTable } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
 import { recalculateSchedule, type SchedulerMode } from "../lib/scheduler";
 import { getCurrentControlSnapshot } from "../lib/control-loop";
+import { ensureMasteryIntegrityOnLoad } from "../lib/mastery-integrity";
 
 const router: IRouter = Router();
 
@@ -30,6 +31,7 @@ async function getStaticTopicOrder(mode: SchedulerMode): Promise<number[] | unde
 }
 
 router.get("/schedule/today", async (req, res): Promise<void> => {
+  await ensureMasteryIntegrityOnLoad();
   const today = new Date().toISOString().split("T")[0];
 
   const [existing] = await db
@@ -78,6 +80,7 @@ router.get("/schedule/today", async (req, res): Promise<void> => {
 });
 
 router.post("/schedule/today", async (req, res): Promise<void> => {
+  await ensureMasteryIntegrityOnLoad();
   const mode = parseMode(req.query.mode);
   const snapshot = await getCurrentControlSnapshot();
   const staticTopicOrder = await getStaticTopicOrder(mode);

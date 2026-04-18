@@ -78,7 +78,7 @@ async function createTopic(topic: AiSuggestedTopic): Promise<void> {
   const res = await fetch("/api/topics", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(topic),
+    body: JSON.stringify({ ...topic, masteryScore: 0 }),
   });
   if (!res.ok) throw new Error(`Failed to create topic: ${topic.name}`);
 }

@@ -140,7 +140,7 @@ export async function putMasteryStates(states: TopicMasteryState[]): Promise<voi
 
 export function bootstrapMasteryState(
   topicId: string,
-  initialMastery = 0.1,
+  initialMastery = 0,
 ): TopicMasteryState {
   return {
     topicId,
@@ -153,7 +153,7 @@ export function bootstrapMasteryState(
 
 export async function ensureMasteryState(
   topicId: string,
-  initialMastery = 0.1,
+  initialMastery = 0,
 ): Promise<TopicMasteryState> {
   const existing = await getMasteryState(topicId);
   if (existing) {
