@@ -137,6 +137,9 @@ export default function Schedule() {
   const [activeTimer, setActiveTimer] = useState<ActiveTimer | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const currentBlockRef = useRef<HTMLDivElement | null>(null);
+  const hasInitialFocusRef = useRef(false);
+  const lastFocusedTimerBlockRef = useRef<number | null>(null);
 
   const { data: schedule, isLoading } = useGetTodaySchedule();
   const { data: topics } = useListTopics();
@@ -290,6 +293,33 @@ export default function Schedule() {
   const expectedByNow = missionTotalMinutes * dayProgress;
   const onTrack = missionCompletedMinutes + ON_TRACK_GRACE_MINUTES >= expectedByNow;
   const momentumLabel = getMomentumLabel(Boolean(activeTimer), elapsed, missionCompletion, missionCompletedMinutes);
+  const firstPendingIndex = useMemo(() => {
+    let spent = missionCompletedMinutes;
+    for (let i = 0; i < scheduleBlocks.length; i++) {
+      const block = scheduleBlocks[i];
+      if (spent < block.durationMinutes) return i;
+      spent -= block.durationMinutes;
+    }
+    return 0;
+  }, [missionCompletedMinutes, scheduleBlocks]);
+  const currentIndex = activeTimer?.blockIndex ?? firstPendingIndex;
+  const currentBlock = scheduleBlocks[currentIndex];
+  const nextBlock = currentIndex + 1 < scheduleBlocks.length ? scheduleBlocks[currentIndex + 1] : null;
+  const remainingBlocks = scheduleBlocks.slice(currentIndex + 2);
+
+  useEffect(() => {
+    if (!currentBlockRef.current) return;
+    const timerBlockChanged = activeTimer?.blockIndex !== undefined && activeTimer.blockIndex !== lastFocusedTimerBlockRef.current;
+    const shouldFocus = !hasInitialFocusRef.current || timerBlockChanged;
+    if (!shouldFocus) return;
+    if (!hasInitialFocusRef.current) {
+      hasInitialFocusRef.current = true;
+    }
+    if (activeTimer?.blockIndex !== undefined) {
+      lastFocusedTimerBlockRef.current = activeTimer.blockIndex;
+    }
+    currentBlockRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [activeTimer?.blockIndex]);
 
   return (
     <div className="space-y-6" data-testid="schedule-page">
@@ -354,56 +384,67 @@ export default function Schedule() {
             </div>
           )}
 
+          <div className="sticky top-2 z-10 rounded-lg border bg-background/95 p-3 backdrop-blur supports-[backdrop-filter]:bg-background/75">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium">Ready to study now?</p>
+              <Button
+                className="min-h-[42px]"
+                onClick={() => navigate(`/execute/${currentIndex}`)}
+                disabled={!currentBlock}
+                data-testid="button-start-now"
+              >
+                <Play className="h-4 w-4 mr-1.5 fill-current" />
+                Start Now
+              </Button>
+            </div>
+          </div>
+
           <div className="space-y-3">
             {scheduleBlocks.length === 0 ? (
               <Card>
                 <CardContent className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
                   <BookOpen className="h-10 w-10 mb-3 opacity-40" />
-                  <p className="font-medium">No study blocks scheduled</p>
-                  <p className="text-sm mt-1">Add topics first, then recalculate the schedule.</p>
+                  <p className="font-medium">No study blocks scheduled yet</p>
+                  <p className="text-sm mt-1">Add topics first, then tap Recalculate to generate today’s mission.</p>
                 </CardContent>
               </Card>
             ) : (
-              scheduleBlocks.map((block, i) => {
-                const daysSince = getDaysSinceStudied(block.topicId);
-                const hint = getSessionHint(block.masteryScore, block.sessionType, daysSince);
-                const isThisActive = activeTimer?.blockIndex === i;
-                const hasOtherActive = activeTimer !== null && !isThisActive;
-
-                return (
-                  <Card key={i} className={`transition-all hover:shadow-md ${isThisActive ? "ring-2 ring-primary" : ""}`} data-testid={`block-${i}`}>
-                    <CardContent className="pt-4">
+              <>
+                {currentBlock && (
+                  <div ref={currentBlockRef}>
+                  <Card className="border-primary ring-1 ring-primary/30 shadow-md" data-testid={`block-${currentIndex}`}>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-base">Current session</CardTitle>
+                    </CardHeader>
+                    <CardContent className="pt-0">
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1 flex-wrap">
-                            <h3 className="font-semibold">{block.topicName}</h3>
-                            <Badge variant="outline" className="text-xs">{block.subject}</Badge>
-                            <Badge variant={block.sessionType === "practice" ? "default" : "secondary"} className="text-xs">{block.sessionType}</Badge>
+                            <h3 className="font-semibold">{currentBlock.topicName}</h3>
+                            <Badge variant="outline" className="text-xs">{currentBlock.subject}</Badge>
+                            <Badge variant={currentBlock.sessionType === "practice" ? "default" : "secondary"} className="text-xs">{currentBlock.sessionType}</Badge>
                           </div>
                           <div className="space-y-2">
                             <div className="flex items-center gap-4 text-sm text-muted-foreground">
                               <span className="flex items-center gap-1">
                                 <Clock className="h-3 w-3" />
-                                {isThisActive ? `${formatElapsed(elapsed)} elapsed` : `${block.durationMinutes}m`}
+                                {activeTimer?.blockIndex === currentIndex ? `${formatElapsed(elapsed)} elapsed` : `${currentBlock.durationMinutes}m`}
                               </span>
-                              <span>Mastery: {Math.round(block.masteryScore * 100)}%</span>
-                              {daysSince !== null && daysSince > 0 && (
-                                <span className="text-xs">Last studied {daysSince}d ago</span>
-                              )}
+                              <span>Mastery: {Math.round(currentBlock.masteryScore * 100)}%</span>
                             </div>
-                            <Progress value={block.masteryScore * 100} className="h-1.5" />
+                            <Progress value={currentBlock.masteryScore * 100} className="h-1.5" />
                             <div className="flex items-start gap-1.5 text-xs text-muted-foreground bg-muted/40 rounded-md px-2.5 py-2">
                               <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                              <span className="italic">{hint}</span>
+                              <span className="italic">{getSessionHint(currentBlock.masteryScore, currentBlock.sessionType, getDaysSinceStudied(currentBlock.topicId))}</span>
                             </div>
                           </div>
                         </div>
                         <div className="flex flex-col gap-2 shrink-0">
-                          {isThisActive ? (
+                          {activeTimer?.blockIndex === currentIndex ? (
                             <Button
                               className="min-h-[44px] bg-primary text-primary-foreground px-3 text-sm"
-                              onClick={() => stopTimer({ topicId: block.topicId, topicName: block.topicName, durationMinutes: block.durationMinutes, sessionType: block.sessionType })}
-                              data-testid={`button-stop-${i}`}
+                              onClick={() => stopTimer({ topicId: currentBlock.topicId, topicName: currentBlock.topicName, durationMinutes: currentBlock.durationMinutes, sessionType: currentBlock.sessionType })}
+                              data-testid={`button-stop-${currentIndex}`}
                             >
                               <Square className="h-3.5 w-3.5 mr-1 fill-current" />
                               Stop & Log
@@ -412,9 +453,9 @@ export default function Schedule() {
                             <>
                               <Button
                                 className="min-h-[44px] px-3 text-sm"
-                                onClick={() => navigate(`/execute/${i}`)}
-                                disabled={hasOtherActive}
-                                data-testid={`button-focus-${i}`}
+                                onClick={() => navigate(`/execute/${currentIndex}`)}
+                                disabled={activeTimer !== null}
+                                data-testid={`button-focus-${currentIndex}`}
                               >
                                 <Play className="h-3.5 w-3.5 mr-1 fill-current" />
                                 Focus mode
@@ -422,31 +463,57 @@ export default function Schedule() {
                               <Button
                                 variant="outline"
                                 className="min-h-[44px] px-3 text-sm"
-                                onClick={() => startTimer({ topicId: block.topicId, topicName: block.topicName, sessionType: block.sessionType }, i)}
-                                disabled={hasOtherActive}
-                                data-testid={`button-start-${i}`}
+                                onClick={() => startTimer({ topicId: currentBlock.topicId, topicName: currentBlock.topicName, sessionType: currentBlock.sessionType }, currentIndex)}
+                                disabled={activeTimer !== null}
+                                data-testid={`button-start-${currentIndex}`}
                               >
                                 Quick timer
                               </Button>
                             </>
                           )}
-                          {!isThisActive && (
-                            <Button
-                              variant="ghost"
-                              className="min-h-[44px] px-3 text-xs text-muted-foreground"
-                              onClick={() => openLog({ topicId: block.topicId, topicName: block.topicName, durationMinutes: block.durationMinutes, sessionType: block.sessionType })}
-                              data-testid={`button-log-block-${i}`}
-                            >
-                              <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-                              Log manually
-                            </Button>
-                          )}
                         </div>
                       </div>
                     </CardContent>
                   </Card>
-                );
-              })
+                  </div>
+                )}
+
+                {nextBlock && (
+                  <Card className="border-muted" data-testid={`block-${currentIndex + 1}`}>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm">Next session</CardTitle>
+                    </CardHeader>
+                    <CardContent className="pt-0 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium">{nextBlock.topicName}</p>
+                        <p className="text-xs text-muted-foreground">{nextBlock.durationMinutes}m · {nextBlock.sessionType}</p>
+                      </div>
+                      <Button variant="ghost" className="text-xs" onClick={() => navigate(`/execute/${currentIndex + 1}`)}>
+                        Preview
+                      </Button>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {remainingBlocks.length > 0 && (
+                  <details className="rounded-lg border">
+                    <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium">
+                      Remaining sessions ({remainingBlocks.length})
+                    </summary>
+                    <div className="space-y-2 px-4 pb-4">
+                      {remainingBlocks.map((block, offset) => {
+                        const index = currentIndex + 2 + offset;
+                        return (
+                          <div key={`remaining-${index}`} className="rounded-md border px-3 py-2 text-sm flex items-center justify-between">
+                            <span className="truncate pr-3">{block.topicName}</span>
+                            <span className="text-xs text-muted-foreground shrink-0">{block.durationMinutes}m · {block.sessionType}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </details>
+                )}
+              </>
             )}
           </div>
         </>

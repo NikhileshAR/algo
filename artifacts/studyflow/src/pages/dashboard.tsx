@@ -37,6 +37,9 @@ type ExtendedSchedule = DailySchedule & {
 };
 
 const EXPLANATION_DISPLAY_THRESHOLD = 0.5;
+const STRONG_MOMENTUM_MINUTES = 90;
+const ALMOST_THERE_MINUTES = 60;
+const MIN_CATCHUP_HOURS = 0.5;
 
 type BlockWithExplanation = DailySchedule["blocks"][number] & {
   explanation?: {
@@ -57,6 +60,14 @@ function isIsoDayMatch(studiedAt: unknown, day: string): boolean {
 
 function formatHoursFromMinutes(totalMinutes: number): string {
   return (Math.round((totalMinutes / 60) * 10) / 10).toFixed(1);
+}
+
+function missionMomentumLabel(completion: number, completedMinutes: number, remainingMinutes: number): string {
+  if (completion >= 100) return "Mission complete";
+  if (completedMinutes >= STRONG_MOMENTUM_MINUTES) return "Strong momentum";
+  if (completedMinutes > 0 && remainingMinutes <= ALMOST_THERE_MINUTES) return "Almost there";
+  if (completedMinutes > 0) return "In motion";
+  return "Ready to begin";
 }
 
 function missionStatusBadge(status: "done" | "continue" | "now" | "next"): {
@@ -130,15 +141,15 @@ export default function Dashboard() {
 
   const completion = totalMinutes > 0 ? Math.min(100, Math.round((completedMinutes / totalMinutes) * 100)) : 0;
   const remainingMinutes = Math.max(totalMinutes - completedMinutes, 0);
+  const momentumLabel = missionMomentumLabel(completion, completedMinutes, remainingMinutes);
 
   const paceBehind =
     Boolean(scheduleWithControl?.control?.forecast?.riskSignal?.fallingBehind) ||
     Boolean(scheduleWithControl?.riskSignal?.fallingBehind);
 
-  const expectedCoverage = Math.round((scheduleWithControl?.control?.forecast?.expectedCoverageByExamDate ?? 0) * 100);
-
   const gapHours = scheduleWithControl?.control?.performanceGap?.studyHoursDeviation ?? 0;
   const fellShortHours = gapHours < 0 ? Math.abs(gapHours) : 0;
+  const suggestedCatchupHours = Math.max(MIN_CATCHUP_HOURS, Math.round(fellShortHours * 10) / 10);
   const intervention = scheduleWithControl?.riskSignal?.intervention ?? scheduleWithControl?.control?.forecast?.riskSignal?.intervention;
 
   const numberedBlocks = useMemo(() => {
@@ -161,7 +172,6 @@ export default function Dashboard() {
     });
   }, [scheduleBlocks, completedMinutes]);
 
-  // Index of first incomplete block (for focus-mode entry)
   const firstPendingIndex = numberedBlocks.find((nb) => nb.status !== "done")?.index ?? 0;
 
   if (profileLoading || scheduleLoading) {
@@ -179,43 +189,16 @@ export default function Dashboard() {
   }
 
   const hasTopics = (topics?.length ?? 0) > 0;
-
-  if (!hasTopics) {
-    return (
-      <div className="space-y-4" data-testid="dashboard">
-        <h1 className="text-2xl font-bold tracking-tight">Today’s Mission</h1>
-        <Card>
-          <CardContent className="py-8 text-center space-y-3">
-            <p className="text-sm text-muted-foreground">Add your exam topics first. Then the system will generate a daily mission you can follow directly.</p>
-            <Link href="/topics"><Button>Go to Topics</Button></Link>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (!schedule || scheduleBlocks.length === 0) {
-    return (
-      <div className="space-y-4" data-testid="dashboard">
-        <h1 className="text-2xl font-bold tracking-tight">Today’s Mission</h1>
-        <Card>
-          <CardContent className="py-8 text-center space-y-3">
-            <p className="text-sm text-muted-foreground">No mission is ready yet. Generate today’s plan and start execution.</p>
-            <Link href="/schedule"><Button>Open Schedule</Button></Link>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  const hasMission = hasTopics && Boolean(schedule) && scheduleBlocks.length > 0;
 
   return (
     <div className="space-y-5" data-testid="dashboard">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Today’s Mission</h1>
-        <p className="text-sm text-muted-foreground mt-1">Just follow the sequence. The plan updates automatically tomorrow.</p>
+        <p className="text-sm text-muted-foreground mt-1">Start now. The plan updates automatically tomorrow.</p>
       </div>
 
-      {schedule.isReset && (
+      {schedule?.isReset && (
         <Card className="border-primary/30 bg-primary/5">
           <CardContent className="py-3 text-sm text-foreground flex items-center gap-2">
             <RefreshCw className="h-4 w-4 text-primary" />
@@ -231,89 +214,100 @@ export default function Dashboard() {
             Execute now
           </CardTitle>
           <CardDescription>
-            Target {formatHoursFromMinutes(totalMinutes)}h · {remainingMinutes} min left · {paceBehind ? "Behind pace" : "On track"}
+            {hasMission
+              ? `Target ${formatHoursFromMinutes(totalMinutes)}h · ${remainingMinutes} min left · ${paceBehind ? "Needs catch-up" : "On track"}`
+              : "Your mission appears here automatically every day."}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <Progress value={completion} className="h-2" />
-          <div className="text-xs text-muted-foreground">{completion}% complete</div>
-
-          <div className="space-y-2">
-            {numberedBlocks.map(({ block, index, status }) => {
-              const badge = missionStatusBadge(status);
-              return (
-                <div key={`${block.topicId}-${index}`} className="rounded-lg border px-3 py-2.5 bg-muted/20">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium truncate">
-                      {index + 1}. {block.topicName}
-                    </p>
-                    <p className="text-xs text-muted-foreground">{block.durationMinutes}m · {block.sessionType}</p>
-                  </div>
-                  <Badge variant={badge.variant}>
-                    {badge.label}
-                  </Badge>
-                </div>
-                <details className="mt-2 text-xs text-muted-foreground">
-                  <summary className="cursor-pointer hover:text-foreground">Why this topic?</summary>
-                  <p className="mt-1 leading-relaxed">{blockReason(block)}</p>
-                </details>
-              </div>
-              );
-            })}
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>{completion}% complete</span>
+            <span>{momentumLabel}</span>
           </div>
 
-          <Link href={`/execute/${firstPendingIndex}`}>
+          {hasMission ? (
+            <div className="space-y-2">
+              {numberedBlocks.map(({ block, index, status }) => {
+                const badge = missionStatusBadge(status);
+                return (
+                  <div key={`${block.topicId}-${index}`} className="rounded-lg border px-3 py-2.5 bg-muted/20">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {index + 1}. {block.topicName}
+                        </p>
+                        <p className="text-xs text-muted-foreground">{block.durationMinutes}m · {block.sessionType}</p>
+                      </div>
+                      <Badge variant={badge.variant}>
+                        {badge.label}
+                      </Badge>
+                    </div>
+                    <details className="mt-2 text-xs text-muted-foreground">
+                      <summary className="cursor-pointer hover:text-foreground">Why this topic?</summary>
+                      <p className="mt-1 leading-relaxed">{blockReason(block)}</p>
+                    </details>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-lg border px-3 py-3 bg-muted/20 text-sm text-muted-foreground">
+              {hasTopics
+                ? "We’re preparing your sequence now. Open Schedule to recalculate if you changed topics."
+                : "Add your first topics and your mission will appear here instantly."}
+            </div>
+          )}
+
+          <Link href={hasMission ? `/execute/${firstPendingIndex}` : hasTopics ? "/schedule" : "/topics"}>
             <Button className="w-full" data-testid="button-open-schedule-flow">
-              Start focused execution
+              Start Focused Session
               <ArrowRight className="h-4 w-4 ml-2" />
             </Button>
           </Link>
+          {!hasMission && (
+            <p className="text-xs text-muted-foreground">
+              {hasTopics ? "Need a fresh mission? Recalculate once in Schedule." : "Add topics first, then launch your first focused session."}
+            </p>
+          )}
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Behavior signals</CardTitle>
+          <CardTitle className="text-sm">What to do now</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
-          <div className="flex items-start gap-2" role="status" aria-live="polite">
-            <Clock3 className="h-4 w-4 mt-0.5 text-muted-foreground" />
-            <span>Forecast: <span className="font-medium">{paceBehind ? "Behind pace" : "On track"}</span>.</span>
-          </div>
-
-          {fellShortHours > 0 && (
+          {hasMission && paceBehind ? (
             <div className="flex items-start gap-2" role="status" aria-live="polite">
               <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-600" />
-              <span>Performance gap: You fell short by <span className="font-medium">{fellShortHours.toFixed(1)}h</span> in the latest tracking window.</span>
+              <span>At your current pace, you may not complete the syllabus on time.</span>
+            </div>
+          ) : (
+            <div className="flex items-start gap-2" role="status" aria-live="polite">
+              <Clock3 className="h-4 w-4 mt-0.5 text-muted-foreground" />
+              <span>{hasMission ? "You are on pace. Keep following today’s sequence." : "Set up today’s mission, then start your first focus block."}</span>
             </div>
           )}
 
-          {(scheduleWithControl?.riskSignal?.backlogRisk ?? 0) >= 0.5 && (
+          {hasMission && paceBehind && (
             <div className="flex items-start gap-2" role="status" aria-live="polite">
               <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-600" />
-              <span>Risk: If this continues, expected coverage trends toward <span className="font-medium">{expectedCoverage}%</span>.</span>
+              <span>You need about <span className="font-medium">+{suggestedCatchupHours.toFixed(1)} hours/day</span> this week to stay on track.</span>
             </div>
           )}
 
           <div className="flex items-start gap-2">
             <CircleCheck className="h-4 w-4 mt-0.5 text-emerald-600" />
-            <span>Intervention: {interventionMessage(intervention)}</span>
+            <span>{interventionMessage(intervention)}</span>
           </div>
-
-          <details className="text-xs text-muted-foreground pt-1">
-            <summary className="cursor-pointer hover:text-foreground">Why increased load or reset?</summary>
-            <p className="mt-1 leading-relaxed">
-              The daily target is tuned from discipline, capacity, forecast risk, and intervention mode. Higher risk reduces or concentrates targets; reset mode applies a clean recovery plan.
-            </p>
-          </details>
         </CardContent>
       </Card>
 
       <Card className="bg-muted/20 border-dashed">
         <CardContent className="py-3 text-xs text-muted-foreground flex items-center gap-2">
           <Sparkles className="h-4 w-4" />
-          Open app → execute mission → return tomorrow for an auto-updated plan.
+          Open app → start focused session → keep your streak alive.
         </CardContent>
       </Card>
     </div>

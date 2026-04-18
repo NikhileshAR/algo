@@ -8,6 +8,7 @@ import {
 } from "../lib/control-loop";
 
 const router: IRouter = Router();
+const CONSISTENCY_DROP_TOLERANCE_HOURS = 0.3;
 
 /**
  * GET /api/analytics/velocity
@@ -89,7 +90,9 @@ router.get("/analytics/study-patterns", async (_req, res): Promise<void> => {
  * Full weekly review: sessions, subjects, recommendations.
  */
 router.get("/analytics/weekly-review", async (_req, res): Promise<void> => {
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
 
   const allSessions = await db
     .select()
@@ -100,12 +103,19 @@ router.get("/analytics/weekly-review", async (_req, res): Promise<void> => {
   const weeklySessions = allSessions.filter(
     (s) => new Date(s.studiedAt) >= sevenDaysAgo,
   );
+  const previousWeekSessions = allSessions.filter((s) => {
+    const studiedAt = new Date(s.studiedAt);
+    return studiedAt >= fourteenDaysAgo && studiedAt < sevenDaysAgo;
+  });
 
   const topics = await db.select().from(topicsTable);
 
   const totalMinutes = weeklySessions.reduce((s, ss) => s + ss.durationMinutes, 0);
+  const previousWeekMinutes = previousWeekSessions.reduce((s, ss) => s + ss.durationMinutes, 0);
   const practiceCount = weeklySessions.filter((s) => s.sessionType === "practice").length;
   const lectureCount = weeklySessions.filter((s) => s.sessionType === "lecture").length;
+  const previousWeekPracticeCount = previousWeekSessions.filter((s) => s.sessionType === "practice").length;
+  const previousWeekLectureCount = previousWeekSessions.filter((s) => s.sessionType === "lecture").length;
 
   const subjectMinutes: Record<string, number> = {};
   for (const s of weeklySessions) {
@@ -133,6 +143,40 @@ router.get("/analytics/weekly-review", async (_req, res): Promise<void> => {
   const daysWithStudy = new Set(
     weeklySessions.map((s) => new Date(s.studiedAt).toDateString()),
   ).size;
+  const previousWeekDaysWithStudy = new Set(
+    previousWeekSessions.map((s) => new Date(s.studiedAt).toDateString()),
+  ).size;
+
+  const dailyHours = Array.from({ length: 7 }).map((_, index) => {
+    const date = new Date(sevenDaysAgo.getTime() + index * 24 * 60 * 60 * 1000);
+    const dateKey = date.toDateString();
+    const minutes = weeklySessions
+      .filter((s) => new Date(s.studiedAt).toDateString() === dateKey)
+      .reduce((sum, s) => sum + s.durationMinutes, 0);
+    return {
+      date: date.toISOString().split("T")[0],
+      label: date.toLocaleDateString("en-US", { weekday: "short" }),
+      minutes,
+      hours: Math.round((minutes / 60) * 10) / 10,
+    };
+  });
+
+  const firstHalfHours = dailyHours.slice(0, 3).reduce((sum, d) => sum + d.hours, 0);
+  const secondHalfHours = dailyHours.slice(3).reduce((sum, d) => sum + d.hours, 0);
+  const consistencyDroppedMidWeek = secondHalfHours + CONSISTENCY_DROP_TOLERANCE_HOURS < firstHalfHours;
+  const skippedPracticeSessions = practiceCount === 0 && lectureCount > 0;
+
+  const completedRecoveryBreaks: number[] = [];
+  let currentBreak = 0;
+  for (const day of dailyHours) {
+    if (day.minutes === 0) {
+      currentBreak += 1;
+    } else if (currentBreak > 0) {
+      completedRecoveryBreaks.push(currentBreak);
+      currentBreak = 0;
+    }
+  }
+  const mostRecentBreakLength = completedRecoveryBreaks.at(-1) ?? 0;
 
   res.json({
     weeklySessions: weeklySessions.map((s) => ({
@@ -142,12 +186,21 @@ router.get("/analytics/weekly-review", async (_req, res): Promise<void> => {
     })),
     totalMinutes,
     totalHours: totalMinutes / 60,
+    previousWeekMinutes,
+    previousWeekHours: previousWeekMinutes / 60,
     practiceCount,
     lectureCount,
+    previousWeekPracticeCount,
+    previousWeekLectureCount,
     daysWithStudy,
+    previousWeekDaysWithStudy,
     subjectBreakdown: Object.entries(subjectMinutes)
       .map(([subject, minutes]) => ({ subject, minutes }))
       .sort((a, b) => b.minutes - a.minutes),
+    dailyHours,
+    consistencyDroppedMidWeek,
+    skippedPracticeSessions,
+    recoveryDays: mostRecentBreakLength,
     neglectedTopics,
     lowestMastery,
     averageMastery: avgMastery,
