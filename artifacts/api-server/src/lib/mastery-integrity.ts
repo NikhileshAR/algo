@@ -13,6 +13,8 @@ interface MasteryStats {
 // If an overwhelming majority of topics are near-perfect without any real
 // session history, this is treated as corrupted bootstrap state.
 // 0.8 means at least 80% of topics have mastery >= 0.95.
+// This threshold is intentionally conservative to avoid resetting in normal
+// progression, where high mastery typically appears with corresponding session history.
 const HIGH_MASTERY_CORRUPTION_THRESHOLD = 0.8;
 
 function round(value: number): number {
@@ -62,7 +64,7 @@ async function hasRealSessionHistory(): Promise<boolean> {
  * This intentionally clears only mastery/cache-like data that can be
  * recomputed safely when corruption is detected.
  */
-async function runSoftReset(reason: "uniform_non_zero_mastery" | "bootstrap_mastery_corruption"): Promise<void> {
+async function runSoftReset(reason: "uniform_non_zero_mastery" | "bootstrap_mastery_corruption"): Promise<boolean> {
   await db.transaction(async (tx) => {
     await tx
       .update(topicsTable)
@@ -79,6 +81,7 @@ async function runSoftReset(reason: "uniform_non_zero_mastery" | "bootstrap_mast
   });
 
   logger.warn({ reason }, "Mastery anomaly detected; soft reset applied");
+  return true;
 }
 
 export async function ensureMasteryIntegrityOnLoad(): Promise<void> {
