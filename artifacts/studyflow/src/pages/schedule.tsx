@@ -40,6 +40,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { useToast } from "@/hooks/use-toast";
 import { RefreshCw, Clock, CheckCircle2, BookOpen, Target, Info, Play, Square } from "lucide-react";
+import { recordManualTelemetryEvent, syncSchedulerTelemetryInput } from "@/lib/local-db/bridge";
+import { runFeedbackLoop } from "@/lib/feedback-loop";
 
 const logSessionSchema = z.object({
   topicId: z.coerce.number().min(1, "Select a topic"),
@@ -168,12 +170,15 @@ export default function Schedule() {
   }
 
   function handleRecalculate() {
-    recalculate.mutate(undefined, {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
-        toast({ title: "Schedule recalculated", description: "Your plan has been updated based on your current state." });
-      },
+    const today = new Date().toISOString().split("T")[0];
+    void syncSchedulerTelemetryInput(today).finally(() => {
+      recalculate.mutate(undefined, {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() });
+          queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
+          toast({ title: "Schedule recalculated", description: "Your plan has been updated based on your telemetry + current state." });
+        },
+      });
     });
   }
 
@@ -212,6 +217,20 @@ export default function Schedule() {
           queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
           queryClient.invalidateQueries({ queryKey: getGetPriorityTopicsQueryKey() });
           queryClient.invalidateQueries({ queryKey: getListTopicsQueryKey() });
+          if (topicName) {
+            void recordManualTelemetryEvent({
+              topic: topicName,
+              durationMinutes: data.durationMinutes,
+              title: data.notes || undefined,
+            });
+            // Phase 4: update local mastery state via feedback loop
+            void runFeedbackLoop({
+              topicId: String(data.topicId),
+              topicName,
+              serverMastery: topic?.masteryScore ?? 0.1,
+              focusedMinutes: data.durationMinutes,
+            });
+          }
         },
         onError: () => {
           toast({ title: "Error", description: "Failed to log session.", variant: "destructive" });

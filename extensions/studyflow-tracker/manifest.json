@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "StudyFlow Tracker",
+  "description": "Automatic local-first study telemetry tracker for StudyFlow.",
+  "version": "0.1.0",
+  "permissions": ["tabs", "idle", "storage", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.ts"],
+      "run_at": "document_idle"
+    }
+  ]
+}

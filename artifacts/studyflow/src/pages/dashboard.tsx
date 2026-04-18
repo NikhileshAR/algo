@@ -40,6 +40,9 @@ import {
   ArrowRight,
   Activity,
 } from "lucide-react";
+import { useTelemetrySummary } from "@/hooks/use-telemetry-summary";
+import { useSmartRecommendations } from "@/hooks/use-smart-recommendations";
+import { AdaptiveInsightsPanel } from "@/components/adaptive-insights-panel";
 
 function StatCard({ title, value, description, icon: Icon }: { title: string; value: string | number; description?: string; icon: React.ElementType }) {
   return (
@@ -222,6 +225,11 @@ export default function Dashboard() {
     queryFn: () => fetch("/api/analytics/study-patterns").then((r) => r.json()),
     enabled: (summary?.weeklyStudiedHours ?? 0) > 0,
   });
+  const { data: telemetrySummary } = useTelemetrySummary();
+  const { data: smartRecs, isLoading: recsLoading } = useSmartRecommendations({
+    topics: allTopics ?? [],
+    daysUntilExam: summary?.daysUntilExam ?? 180,
+  });
 
   useEffect(() => {
     if (!profileLoading && profileError) setLocation("/onboarding");
@@ -286,6 +294,9 @@ export default function Dashboard() {
           </>
         )}
       </div>
+
+      {/* Phase 4: Adaptive Intelligence Panel replaces raw telemetry card */}
+      <AdaptiveInsightsPanel recommendations={smartRecs} isLoading={recsLoading && (allTopics?.length ?? 0) > 0} />
 
       {summary && !summaryLoading && (
         <NarrativeInsights summary={summary} schedule={scheduleForInsights} topicsCount={topicsCount} velocity={velocity} studyPatterns={studyPatterns} />
