@@ -202,7 +202,7 @@ function parseCSV(text: string): {
         rejectedRows++;
         continue;
       }
-      masteryScore = Math.min(1, Math.max(0, parsedMastery));
+      masteryScore = parsedMastery;
     }
 
     if (name) {

@@ -48,7 +48,7 @@ router.post("/topics", async (req, res): Promise<void> => {
     return;
   }
 
-  const masteryScore = rawMastery === undefined ? 0 : Math.min(1, Math.max(0, rawMastery));
+  const masteryScore = rawMastery ?? 0;
 
   const [topic] = await db
     .insert(topicsTable)

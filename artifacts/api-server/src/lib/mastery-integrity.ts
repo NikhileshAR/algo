@@ -10,6 +10,10 @@ interface MasteryStats {
   highMasteryRatio: number;
 }
 
+// If an overwhelming majority of topics are near-perfect without any real
+// session history, this is treated as corrupted bootstrap state.
+const BOOTSTRAP_CORRUPTION_HIGH_MASTERY_RATIO = 0.8;
+
 function round(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
@@ -85,7 +89,7 @@ export async function ensureMasteryIntegrityOnLoad(): Promise<void> {
   }
 
   const noRealHistory = !(await hasRealSessionHistory());
-  const bootstrapCorruption = stats.highMasteryRatio > 0.8 && noRealHistory;
+  const bootstrapCorruption = stats.highMasteryRatio > BOOTSTRAP_CORRUPTION_HIGH_MASTERY_RATIO && noRealHistory;
   const uniformNonZero = stats.allIdentical && !stats.allZero;
 
   if (!bootstrapCorruption && !uniformNonZero) {
