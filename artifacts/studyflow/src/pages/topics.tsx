@@ -78,16 +78,22 @@ function CurriculumForecast({ topics, summary }: {
   const projectedPercent = Math.round(projectedMastery * 100);
   const currentPercent = Math.round(avgMastery * 100);
   const onTrack = projectedMastery >= 0.8;
+  const recommendedDailyHours = totalEstimatedHours > 0 && daysLeft > 0
+    ? Math.max((totalEstimatedHours * (0.8 - avgMastery)) / daysLeft, 0)
+    : 0;
+  const additionalDailyHours = Math.max(0, recommendedDailyHours - dailyHours);
   const examDateStr = new Date(summary.examDate).toLocaleDateString("en-US", { month: "short", day: "numeric" });
   let verdict: string;
+  let action: string;
   if (weeklyHours === 0) {
-    verdict = "No study hours recorded yet — log sessions to enable forecasting.";
+    verdict = "No study hours recorded yet, so your forecast is still blank.";
+    action = "Log your first session today to get a real pace target.";
   } else if (onTrack) {
-    verdict = `At ${weeklyHours.toFixed(1)}h/week you're on track to reach ~${projectedPercent}% mastery by ${examDateStr}. Keep the consistency.`;
-  } else if (projectedMastery >= 0.6) {
-    verdict = `At ${weeklyHours.toFixed(1)}h/week you'll reach ~${projectedPercent}% mastery by ${examDateStr}. Increase daily hours to close the gap.`;
+    verdict = `At your current pace, you are on track to finish strong by ${examDateStr}.`;
+    action = "Keep this pace and protect your daily consistency.";
   } else {
-    verdict = `At current pace (~${weeklyHours.toFixed(1)}h/week) you'll reach ~${projectedPercent}% by ${examDateStr}. A significant increase is needed.`;
+    verdict = "At your current pace, you may not complete the syllabus.";
+    action = `You need about +${Math.max(0.5, Math.round(additionalDailyHours * 10) / 10).toFixed(1)} hours/day to stay on track.`;
   }
   return (
     <Card className={onTrack ? "border-emerald-200 bg-emerald-50/50" : "border-amber-200 bg-amber-50/40"}>
@@ -99,6 +105,7 @@ function CurriculumForecast({ topics, summary }: {
         <CardDescription className="text-xs">{verdict}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
+        <div className="text-sm font-medium">{action}</div>
         <div className="space-y-1">
           <div className="flex justify-between text-xs text-muted-foreground"><span>Current mastery</span><span>{currentPercent}%</span></div>
           <Progress value={currentPercent} className="h-2" />
@@ -216,9 +223,9 @@ export default function Topics() {
   const [search, setSearch] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<number | null>(null);
-  const [selectedSubject, setSelectedSubject] = useState<string>("all");
   const [importing, setImporting] = useState(false);
   const [expandedHistory, setExpandedHistory] = useState<number | null>(null);
+  const [showAllTopics, setShowAllTopics] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: topics, isLoading } = useListTopics();
@@ -301,12 +308,20 @@ export default function Topics() {
   }
 
   const allTopics = topics ?? [];
-  const subjects = ["all", ...Array.from(new Set(allTopics.map((t) => t.subject)))];
-  const filtered = allTopics.filter((t) => {
-    const matchesSearch = t.name.toLowerCase().includes(search.toLowerCase()) || t.subject.toLowerCase().includes(search.toLowerCase());
-    const matchesSubject = selectedSubject === "all" || t.subject === selectedSubject;
-    return matchesSearch && matchesSubject;
-  });
+  const filtered = allTopics.filter((t) =>
+    t.name.toLowerCase().includes(search.toLowerCase()) || t.subject.toLowerCase().includes(search.toLowerCase())
+  );
+  const activeTopics = allTopics.filter((t) => !t.isCompleted);
+  const focusNow = [...activeTopics]
+    .sort((a, b) => (b.priorityScore ?? 0) - (a.priorityScore ?? 0))
+    .slice(0, 5);
+  const weakAreas = [...activeTopics]
+    .sort((a, b) => a.masteryScore - b.masteryScore)
+    .slice(0, 5);
+  const recentlyStudied = [...activeTopics]
+    .filter((t) => Boolean(t.lastStudiedAt))
+    .sort((a, b) => new Date(b.lastStudiedAt ?? 0).getTime() - new Date(a.lastStudiedAt ?? 0).getTime())
+    .slice(0, 5);
 
   return (
     <div className="space-y-6" data-testid="topics-page">
@@ -328,19 +343,77 @@ export default function Topics() {
 
       {allTopics.length > 0 && summary && <CurriculumForecast topics={allTopics} summary={summary} />}
 
-      <div className="flex gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-48">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search topics..." className="pl-9" value={search} onChange={(e) => setSearch(e.target.value)} data-testid="input-search" />
-        </div>
-        <div className="flex gap-2 flex-wrap">
-          {subjects.map((s) => (
-            <Button key={s} variant={selectedSubject === s ? "default" : "outline"} size="sm" onClick={() => setSelectedSubject(s)} className="min-h-[36px]" data-testid={`filter-${s}`}>
-              {s === "all" ? "All" : s}
-            </Button>
-          ))}
-        </div>
+      <div className="grid gap-4 md:grid-cols-3">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Focus Now</CardTitle>
+            <CardDescription>Start with these highest-impact topics.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {focusNow.length > 0 ? focusNow.map((topic) => (
+              <div key={`focus-${topic.id}`} className="rounded-md border px-2.5 py-2">
+                <p className="text-sm font-medium line-clamp-1">{topic.name}</p>
+                <p className="text-xs text-muted-foreground">{topic.subject} · {Math.round(topic.masteryScore * 100)}% mastery</p>
+              </div>
+            )) : <p className="text-xs text-muted-foreground">Add topics to generate focus picks.</p>}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Weak Areas</CardTitle>
+            <CardDescription>Patch these to reduce exam risk fastest.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {weakAreas.length > 0 ? weakAreas.map((topic) => (
+              <div key={`weak-${topic.id}`} className="rounded-md border px-2.5 py-2">
+                <p className="text-sm font-medium line-clamp-1">{topic.name}</p>
+                <p className="text-xs text-muted-foreground">{Math.round(topic.masteryScore * 100)}% mastery · {topic.estimatedHours}h est.</p>
+              </div>
+            )) : <p className="text-xs text-muted-foreground">No weak areas yet.</p>}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Recently Studied</CardTitle>
+            <CardDescription>Quick restart options from recent momentum.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {recentlyStudied.length > 0 ? recentlyStudied.map((topic) => (
+              <div key={`recent-${topic.id}`} className="rounded-md border px-2.5 py-2">
+                <p className="text-sm font-medium line-clamp-1">{topic.name}</p>
+                <p className="text-xs text-muted-foreground">
+                  Last: {new Date(topic.lastStudiedAt ?? "").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                </p>
+              </div>
+            )) : <p className="text-xs text-muted-foreground">No sessions logged recently.</p>}
+          </CardContent>
+        </Card>
       </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <CardTitle className="text-sm">All Topics</CardTitle>
+              <CardDescription>Use search when you need the full curriculum list.</CardDescription>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => setShowAllTopics((v) => !v)}>
+              {showAllTopics ? <ChevronUp className="h-4 w-4 mr-1" /> : <ChevronDown className="h-4 w-4 mr-1" />}
+              {showAllTopics ? "Hide list" : "Browse list"}
+            </Button>
+          </div>
+        </CardHeader>
+        {showAllTopics && (
+          <CardContent className="pt-0">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input placeholder="Search topics..." className="pl-9" value={search} onChange={(e) => setSearch(e.target.value)} data-testid="input-search" />
+            </div>
+          </CardContent>
+        )}
+      </Card>
 
       {allTopics.length > 0 && allTopics.length < 3 && (
         <div className="text-xs text-muted-foreground bg-muted/40 rounded-md px-3 py-2 border">
@@ -349,88 +422,96 @@ export default function Topics() {
         </div>
       )}
 
-      {isLoading ? (
-        <div className="space-y-3">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-24" />)}</div>
-      ) : filtered.length === 0 ? (
+      {showAllTopics ? (
+        isLoading ? (
+          <div className="space-y-3">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-24" />)}</div>
+        ) : filtered.length === 0 ? (
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground">
+              <Library className="h-10 w-10 mb-3 opacity-40" />
+              {allTopics.length === 0 ? (
+                <>
+                  <p className="font-medium">No topics yet</p>
+                  <p className="text-sm mt-1">Add your first topic or import a CSV to build your curriculum.</p>
+                  <div className="flex gap-2 mt-4">
+                    <Button onClick={() => setAddOpen(true)}>Add topic</Button>
+                    <Button variant="outline" onClick={() => fileInputRef.current?.click()}>Import CSV</Button>
+                  </div>
+                </>
+              ) : <p className="font-medium">No topics match your search</p>}
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-2">
+            {filtered.map((topic) => {
+              const isBlocked = topic.prerequisites.some((pid) => {
+                const p = allTopics.find((t) => t.id === pid);
+                return p && !p.isCompleted && p.masteryScore < 0.6;
+              });
+              const hasConfidence = topic.testsCount > 0;
+              const isHistoryOpen = expandedHistory === topic.id;
+
+              return (
+                <Card key={topic.id} className={`transition-all hover:shadow-sm ${topic.isCompleted ? "opacity-60" : ""}`} data-testid={`topic-${topic.id}`}>
+                  <CardContent className="pt-4 pb-4">
+                    <div className="flex items-start gap-3">
+                      <button onClick={() => toggleComplete(topic.id, topic.isCompleted)} className="mt-0.5 shrink-0 text-muted-foreground hover:text-primary transition-colors min-h-[32px] min-w-[32px] flex items-center justify-center" data-testid={`toggle-complete-${topic.id}`}>
+                        {topic.isCompleted ? <CheckCircle className="h-5 w-5 text-primary" /> : <Circle className="h-5 w-5" />}
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          <button className="font-semibold text-left hover:underline text-sm" onClick={() => setExpandedHistory(isHistoryOpen ? null : topic.id)}>
+                            <span className={topic.isCompleted ? "line-through" : ""}>{topic.name}</span>
+                          </button>
+                          <Badge variant="outline" className="text-xs">{topic.subject}</Badge>
+                          <Badge variant="secondary" className="text-xs">{"★".repeat(topic.difficultyLevel)}{"☆".repeat(5 - topic.difficultyLevel)}</Badge>
+                          {isBlocked && !topic.isCompleted && (
+                            <Badge variant="outline" className="text-xs text-amber-700 border-amber-300 bg-amber-50">
+                              <Lock className="h-2.5 w-2.5 mr-1" />blocked
+                            </Badge>
+                          )}
+                          {topic.prerequisites.length > 0 && !isBlocked && (
+                            <Badge variant="outline" className="text-xs text-muted-foreground">{topic.prerequisites.length} prereq{topic.prerequisites.length > 1 ? "s" : ""}</Badge>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-4 text-xs text-muted-foreground mb-2 flex-wrap">
+                          <span>{topic.estimatedHours}h estimated</span>
+                          <span>Mastery: {Math.round(topic.masteryScore * 100)}%</span>
+                          {hasConfidence && (
+                            <span className={`font-medium ${topic.confidenceScore >= 0.5 ? "text-emerald-700" : topic.confidenceScore >= 0.2 ? "text-amber-700" : "text-muted-foreground"}`}>
+                              Confidence: {Math.round(topic.confidenceScore * 100)}% ({topic.testsCount} test{topic.testsCount !== 1 ? "s" : ""})
+                            </span>
+                          )}
+                          {!hasConfidence && <span className="italic text-muted-foreground/70">no practice yet</span>}
+                          {topic.lastStudiedAt && (
+                            <span>Last: {new Date(topic.lastStudiedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
+                          )}
+                        </div>
+                        <Progress value={topic.masteryScore * 100} className="h-1.5" />
+                        <BlockedByInfo topic={topic} allTopics={allTopics} />
+                        {isHistoryOpen && <TopicHistory topicId={topic.id} />}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0 mt-0.5">
+                        <button onClick={() => setExpandedHistory(isHistoryOpen ? null : topic.id)} className="text-muted-foreground hover:text-foreground transition-colors min-h-[32px] min-w-[32px] flex items-center justify-center" title={isHistoryOpen ? "Hide history" : "Show history"}>
+                          {isHistoryOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                        </button>
+                        <button onClick={() => setDeleteId(topic.id)} className="text-muted-foreground hover:text-destructive transition-colors min-h-[32px] min-w-[32px] flex items-center justify-center" data-testid={`delete-topic-${topic.id}`}>
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )
+      ) : (
         <Card>
-          <CardContent className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground">
-            <Library className="h-10 w-10 mb-3 opacity-40" />
-            {allTopics.length === 0 ? (
-              <>
-                <p className="font-medium">No topics yet</p>
-                <p className="text-sm mt-1">Add your first topic or import a CSV to build your curriculum.</p>
-                <div className="flex gap-2 mt-4">
-                  <Button onClick={() => setAddOpen(true)}>Add topic</Button>
-                  <Button variant="outline" onClick={() => fileInputRef.current?.click()}>Import CSV</Button>
-                </div>
-              </>
-            ) : <p className="font-medium">No topics match your search</p>}
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            Focus sections are shown above. Open <span className="font-medium">Browse list</span> when you need every topic.
           </CardContent>
         </Card>
-      ) : (
-        <div className="space-y-2">
-          {filtered.map((topic) => {
-            const isBlocked = topic.prerequisites.some((pid) => {
-              const p = allTopics.find((t) => t.id === pid);
-              return p && !p.isCompleted && p.masteryScore < 0.6;
-            });
-            const hasConfidence = topic.testsCount > 0;
-            const isHistoryOpen = expandedHistory === topic.id;
-
-            return (
-              <Card key={topic.id} className={`transition-all hover:shadow-sm ${topic.isCompleted ? "opacity-60" : ""}`} data-testid={`topic-${topic.id}`}>
-                <CardContent className="pt-4 pb-4">
-                  <div className="flex items-start gap-3">
-                    <button onClick={() => toggleComplete(topic.id, topic.isCompleted)} className="mt-0.5 shrink-0 text-muted-foreground hover:text-primary transition-colors min-h-[32px] min-w-[32px] flex items-center justify-center" data-testid={`toggle-complete-${topic.id}`}>
-                      {topic.isCompleted ? <CheckCircle className="h-5 w-5 text-primary" /> : <Circle className="h-5 w-5" />}
-                    </button>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap mb-1">
-                        <button className="font-semibold text-left hover:underline text-sm" onClick={() => setExpandedHistory(isHistoryOpen ? null : topic.id)}>
-                          <span className={topic.isCompleted ? "line-through" : ""}>{topic.name}</span>
-                        </button>
-                        <Badge variant="outline" className="text-xs">{topic.subject}</Badge>
-                        <Badge variant="secondary" className="text-xs">{"★".repeat(topic.difficultyLevel)}{"☆".repeat(5 - topic.difficultyLevel)}</Badge>
-                        {isBlocked && !topic.isCompleted && (
-                          <Badge variant="outline" className="text-xs text-amber-700 border-amber-300 bg-amber-50">
-                            <Lock className="h-2.5 w-2.5 mr-1" />blocked
-                          </Badge>
-                        )}
-                        {topic.prerequisites.length > 0 && !isBlocked && (
-                          <Badge variant="outline" className="text-xs text-muted-foreground">{topic.prerequisites.length} prereq{topic.prerequisites.length > 1 ? "s" : ""}</Badge>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-4 text-xs text-muted-foreground mb-2 flex-wrap">
-                        <span>{topic.estimatedHours}h estimated</span>
-                        <span>Mastery: {Math.round(topic.masteryScore * 100)}%</span>
-                        {hasConfidence && (
-                          <span className={`font-medium ${topic.confidenceScore >= 0.5 ? "text-emerald-700" : topic.confidenceScore >= 0.2 ? "text-amber-700" : "text-muted-foreground"}`}>
-                            Confidence: {Math.round(topic.confidenceScore * 100)}% ({topic.testsCount} test{topic.testsCount !== 1 ? "s" : ""})
-                          </span>
-                        )}
-                        {!hasConfidence && <span className="italic text-muted-foreground/70">no practice yet</span>}
-                        {topic.lastStudiedAt && (
-                          <span>Last: {new Date(topic.lastStudiedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
-                        )}
-                      </div>
-                      <Progress value={topic.masteryScore * 100} className="h-1.5" />
-                      <BlockedByInfo topic={topic} allTopics={allTopics} />
-                      {isHistoryOpen && <TopicHistory topicId={topic.id} />}
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0 mt-0.5">
-                      <button onClick={() => setExpandedHistory(isHistoryOpen ? null : topic.id)} className="text-muted-foreground hover:text-foreground transition-colors min-h-[32px] min-w-[32px] flex items-center justify-center" title={isHistoryOpen ? "Hide history" : "Show history"}>
-                        {isHistoryOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                      </button>
-                      <button onClick={() => setDeleteId(topic.id)} className="text-muted-foreground hover:text-destructive transition-colors min-h-[32px] min-w-[32px] flex items-center justify-center" data-testid={`delete-topic-${topic.id}`}>
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
       )}
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>

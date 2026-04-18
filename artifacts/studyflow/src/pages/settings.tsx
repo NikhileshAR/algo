@@ -4,7 +4,7 @@ import {
   getGetStudentProfileQueryKey,
   getGetDashboardSummaryQueryKey,
 } from "@workspace/api-client-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,7 +24,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { useToast } from "@/hooks/use-toast";
 import { useEffect } from "react";
-import { Info } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
 
 const settingsSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -33,30 +33,60 @@ const settingsSchema = z.object({
   dailyTargetHours: z.coerce.number().min(1).max(24),
 });
 
-function StateVectorCard({
+type WeeklySignals = {
+  totalHours: number;
+  previousWeekHours: number;
+  daysWithStudy: number;
+  previousWeekDaysWithStudy: number;
+  practiceCount: number;
+  lectureCount: number;
+  previousWeekPracticeCount: number;
+  previousWeekLectureCount: number;
+};
+
+function formatTrend(delta: number): { label: string; Icon: typeof ArrowUpRight; className: string } {
+  if (delta > 0.01) return { label: "Improving", Icon: ArrowUpRight, className: "text-emerald-700" };
+  if (delta < -0.01) return { label: "Dropping", Icon: ArrowDownRight, className: "text-amber-700" };
+  return { label: "Steady", Icon: Minus as typeof ArrowUpRight, className: "text-muted-foreground" };
+}
+
+function CoachingMetricCard({
   label,
   value,
   max,
   description,
-  unit,
+  interpretation,
+  trendDelta,
+  valueLabel,
 }: {
   label: string;
   value: number;
   max: number;
   description: string;
-  unit?: string;
+  interpretation: string;
+  trendDelta: number;
+  valueLabel: string;
 }) {
   const pct = Math.min((value / max) * 100, 100);
+  const trend = formatTrend(trendDelta);
+
   return (
-    <div className="space-y-1.5">
-      <div className="flex justify-between text-sm">
-        <span className="font-medium">{label}</span>
-        <span className="text-muted-foreground">
-          {value.toFixed(2)}{unit}
+    <div className="space-y-2 rounded-lg border p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium">{label}</p>
+          <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+        <span className={`inline-flex items-center gap-1 text-xs font-medium ${trend.className}`}>
+          <trend.Icon className="h-3.5 w-3.5" />
+          {trend.label}
         </span>
       </div>
       <Progress value={pct} className="h-2" />
-      <p className="text-xs text-muted-foreground">{description}</p>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-medium">{valueLabel}</span>
+        <span className="text-xs text-muted-foreground">{interpretation}</span>
+      </div>
     </div>
   );
 }
@@ -65,6 +95,10 @@ export default function Settings() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { data: profile, isLoading } = useGetStudentProfile();
+  const { data: weeklySignals } = useQuery<WeeklySignals>({
+    queryKey: ["analytics", "weekly-review", "signals"],
+    queryFn: () => fetch("/api/analytics/weekly-review").then((r) => r.json()),
+  });
   const updateProfile = useUpdateStudentProfile();
 
   const form = useForm<z.infer<typeof settingsSchema>>({
@@ -115,17 +149,28 @@ export default function Settings() {
 
   if (!profile) return null;
 
+  const currentDailyHours = weeklySignals ? weeklySignals.totalHours / 7 : profile.capacityScore;
+  const previousDailyHours = weeklySignals ? weeklySignals.previousWeekHours / 7 : currentDailyHours;
+  const consistency = weeklySignals ? weeklySignals.daysWithStudy / 7 : profile.disciplineScore;
+  const previousConsistency = weeklySignals ? weeklySignals.previousWeekDaysWithStudy / 7 : consistency;
+  const currentPracticeRatio = weeklySignals
+    ? weeklySignals.practiceCount / Math.max(weeklySignals.practiceCount + weeklySignals.lectureCount, 1)
+    : profile.activePracticeRatio;
+  const previousPracticeRatio = weeklySignals
+    ? weeklySignals.previousWeekPracticeCount / Math.max(weeklySignals.previousWeekPracticeCount + weeklySignals.previousWeekLectureCount, 1)
+    : currentPracticeRatio;
+
   return (
     <div className="space-y-6 max-w-2xl" data-testid="settings-page">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-        <p className="text-muted-foreground">Manage your exam profile and review your system state</p>
+        <p className="text-muted-foreground">Manage your exam profile and see how your study habits are shifting.</p>
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Exam Profile</CardTitle>
-          <CardDescription>These details are used to compute urgency scores and schedule capacity.</CardDescription>
+          <CardDescription>These details guide urgency and daily mission planning.</CardDescription>
         </CardHeader>
         <CardContent>
           <Form {...form}>
@@ -179,7 +224,7 @@ export default function Settings() {
                       <Input type="number" min="1" max="24" data-testid="input-daily-hours" {...field} />
                     </FormControl>
                     <FormDescription>
-                      The system adapts to your actual performance — this is a target, not a hard constraint.
+                      This is your intent. The app still adapts to real study behavior.
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -195,37 +240,38 @@ export default function Settings() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">System State Vector S = (M, C, K, D, A)</CardTitle>
-          <CardDescription>
-            These values are updated automatically each session. They drive the scheduling engine.
-          </CardDescription>
+          <CardTitle className="text-base">Your Study Signals</CardTitle>
+          <CardDescription>These update automatically after sessions and show where to adjust this week.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-5">
-          <div className="flex items-start gap-2 text-xs text-muted-foreground bg-muted/50 rounded-md p-3">
-            <Info className="h-3 w-3 mt-0.5 shrink-0" />
-            <span>
-              The scheduling engine models discipline as a stochastic variable. These scores reflect your observed behaviour, not your intentions. They stabilise over time as more sessions are recorded.
-            </span>
-          </div>
-
-          <StateVectorCard
-            label="Capacity (K)"
-            value={profile.capacityScore}
+        <CardContent className="space-y-3">
+          <CoachingMetricCard
+            label="Your current daily study stamina"
+            value={currentDailyHours}
             max={12}
-            description="Smoothed average of actual daily study hours. Formula: K(t+1) = 0.8·K(t) + 0.2·H(t)"
-            unit="h/day"
+            valueLabel={`${currentDailyHours.toFixed(1)}h/day`}
+            trendDelta={currentDailyHours - previousDailyHours}
+            description="How much focused study time you can sustain each day"
+            interpretation={currentDailyHours >= 4 ? "You can hold long focus blocks." : "Build stamina with shorter daily blocks."}
           />
-          <StateVectorCard
-            label="Discipline (D)"
-            value={profile.disciplineScore}
+
+          <CoachingMetricCard
+            label="How consistently you follow your plan"
+            value={consistency}
             max={1}
-            description="Ratio of actual focused study time to scheduled study time. Range: 0–1"
+            valueLabel={`${Math.round(consistency * 100)}% consistency`}
+            trendDelta={consistency - previousConsistency}
+            description="How often you actually show up for planned study"
+            interpretation={consistency >= 0.7 ? "Your routine is stable." : "You’re slipping off your plan mid-week."}
           />
-          <StateVectorCard
-            label="Active Practice Ratio (A)"
-            value={profile.activePracticeRatio}
+
+          <CoachingMetricCard
+            label="How much you solve vs just watch"
+            value={currentPracticeRatio}
             max={1}
-            description="Proportion of sessions that are active practice (vs lectures). Determines session type in schedule."
+            valueLabel={`${Math.round(currentPracticeRatio * 100)}% solving`}
+            trendDelta={currentPracticeRatio - previousPracticeRatio}
+            description="Your practice share across this week’s sessions"
+            interpretation={currentPracticeRatio >= 0.35 ? "Good solve-heavy mix." : "You’re watching more than solving."}
           />
         </CardContent>
       </Card>
