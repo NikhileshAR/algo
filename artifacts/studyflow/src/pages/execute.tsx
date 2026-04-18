@@ -108,6 +108,9 @@ const RATING_LABELS: Record<UnderstandingRating, string> = {
   5: "5 — Excellent",
 };
 
+/** Minimum minutes to log for any session, regardless of actual elapsed time. */
+const MIN_SESSION_MINUTES = 1;
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -180,8 +183,7 @@ export default function Execute() {
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (breakIntervalRef.current) clearInterval(breakIntervalRef.current);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [blockIndex]);
 
   // Persist active execution to sessionStorage on every tick
   useEffect(() => {
@@ -284,7 +286,7 @@ export default function Execute() {
   function handleSaveSession() {
     if (!block || completionStatus === null || selfRating === null) return;
 
-    const actualMinutes = Math.max(1, Math.ceil(elapsed / 60));
+    const actualMinutes = Math.max(MIN_SESSION_MINUTES, Math.ceil(elapsed / 60));
     const ratio = completionRatio(completionStatus);
     const effectiveMinutes = Math.round(actualMinutes * ratio);
 
@@ -339,7 +341,8 @@ export default function Execute() {
             setPhase("complete");
           } else {
             const suggestedBreak = computeBreakMinutes(actualMinutes, completedToday, selfRating);
-            if (suggestedBreak > 0) {
+            const needsBreak = suggestedBreak > 0;
+            if (needsBreak) {
               setBreakSeconds(suggestedBreak * 60);
               setBreakElapsed(0);
               startBreakTimer(suggestedBreak * 60);
@@ -435,7 +438,7 @@ export default function Execute() {
               Resume session
             </Button>
             <Button variant="outline" className="w-full" onClick={handleAbandonResume}>
-              Mark partial &amp; continue
+              Mark partial & continue
             </Button>
           </div>
         </div>
@@ -525,7 +528,7 @@ export default function Execute() {
               Resume session
             </Button>
             <Button variant="outline" className="w-full" onClick={handleAbandonSession}>
-              End now &amp; log what I studied
+              End now & log what I studied
             </Button>
           </div>
         </div>
@@ -575,7 +578,7 @@ export default function Execute() {
                 <RatingButton
                   key={v}
                   value={v}
-                  label={v === 1 ? "1" : v === 2 ? "2" : v === 3 ? "3" : v === 4 ? "4" : "5"}
+                  label={String(v)}
                   selected={selfRating === v}
                   onClick={setSelfRating}
                 />

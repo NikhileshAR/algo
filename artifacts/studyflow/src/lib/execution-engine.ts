@@ -58,8 +58,10 @@ export function momentumLabel(state: MomentumState): string {
 // Micro-commitment window
 // ---------------------------------------------------------------------------
 
-/** Seconds the user must spend before "End early" becomes fully available */
-export const COMMITMENT_WINDOW_SECONDS = 10 * 60; // 10 min
+/** Seconds the user must spend before "End early" becomes fully available.
+ * 10 minutes is the minimum commitment designed to overcome initial friction
+ * and ensure a meaningful study attempt before the user can exit. */
+export const COMMITMENT_WINDOW_SECONDS = 10 * 60;
 
 export function isInCommitmentWindow(elapsedSeconds: number): boolean {
   return elapsedSeconds < COMMITMENT_WINDOW_SECONDS;
