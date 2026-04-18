@@ -250,21 +250,21 @@ export const SessionsRepo = {
           const keepA = sourceRank(a.source) >= sourceRank(b.source);
           const winner = keepA ? i : j;
           const loser = keepA ? j : i;
-          // Extend winner's duration to span both windows (take the max end time)
-          const newEndMs = Math.max(aEnd, bEnd);
-          const winnerStart = new Date(mutable[winner].studiedAt).getTime();
+          // Keep credited duration capped at the larger original session
+          // to avoid double counting overlap.
+          const mergedDurationMs = Math.max(a._durationMs, b._durationMs);
           mutable[winner] = {
             ...mutable[winner],
-            _durationMs: newEndMs - winnerStart,
-            durationMinutes: Math.floor((newEndMs - winnerStart) / 60_000),
+            _durationMs: mergedDurationMs,
+            durationMinutes: Math.floor(mergedDurationMs / 60_000),
             qualityScore: Math.max(a.qualityScore, b.qualityScore),
             focusRatio: Math.max(a.focusRatio, b.focusRatio),
           };
           merged.add(loser);
           conflicts.push({ sessionA: a, sessionB: b, overlapMinutes, rule: "merged" });
         } else {
-          // Rule B: different topics — split the overlap proportionally
-          // Subtract overlap from the later-starting session (b)
+          // Rule B: different topics — attribute overlap to the earlier-starting
+          // session and trim only the later-starting one (b).
           const trimMs = overlapMs;
           mutable[j] = {
             ...mutable[j],
@@ -424,6 +424,9 @@ export const TelemetryRepo = {
             // Was already in focus window — rapid context switch back
             // (Cmd+Tab / Alt+Tab return without an intervening tab_blur)
             e.tabSwitchCount += 1;
+            if (e.currentFocusStart !== null) {
+              e.focusedMs += ts - e.currentFocusStart;
+            }
           }
           e.currentFocusStart = ts;
           break;
@@ -493,9 +496,9 @@ export const TelemetryRepo = {
       }
     }
 
-    // Close any still-open windows at day boundary
-    const dayEndTs = Date.now();
+    // Close any still-open windows at each summarized day's boundary
     for (const e of byTopic.values()) {
+      const dayEndTs = new Date(`${e.date}T23:59:59.999Z`).getTime();
       if (e.currentFocusStart !== null) {
         e.focusedMs += dayEndTs - e.currentFocusStart;
         e.currentFocusStart = null;

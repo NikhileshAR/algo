@@ -13,6 +13,8 @@
  */
 
 import { MetaRepo, ProfileRepo, TopicsRepo, SessionsRepo } from "./repositories";
+import { putRecord } from "./idb";
+import { STORE } from "./schema";
 import type {
   MigrationResult,
   LocalStudentProfile,
@@ -104,8 +106,8 @@ export async function getMigrationStatus(): Promise<"done" | "skipped" | null> {
  * deterministic namespace so that prerequisite links remain valid after
  * migration.
  *
- * Topics and sessions already present locally (matching name + createdAt)
- * are not duplicated.
+ * Topics already present locally are deduplicated by lowercase name, and
+ * sessions already present locally are deduplicated by `${topicId}:${studiedAt}`.
  */
 export async function importFromServer(apiUrl: string): Promise<MigrationResult> {
   const result: MigrationResult = {
@@ -195,8 +197,6 @@ export async function importFromServer(apiUrl: string): Promise<MigrationResult>
       };
 
       // Write directly to avoid auto-generating a new ID
-      const { putRecord } = await import("./idb");
-      const { STORE } = await import("./schema");
       await putRecord(STORE.TOPICS, topic);
       result.imported.topics += 1;
     }
@@ -243,8 +243,6 @@ export async function importFromServer(apiUrl: string): Promise<MigrationResult>
         createdAt: ss.createdAt,
       };
 
-      const { putRecord } = await import("./idb");
-      const { STORE } = await import("./schema");
       await putRecord(STORE.SESSIONS, session);
       result.imported.sessions += 1;
     }
