@@ -64,6 +64,13 @@ export interface CalibrationResult {
   detectedBias: "balanced" | "overestimation" | "underestimation";
 }
 
+const DAILY_DECAY_RATE = 0.015;
+const PRACTICE_QUALITY_SIGNAL = 0.74;
+const LECTURE_QUALITY_SIGNAL = 0.58;
+const BASE_COMPLIANCE = 0.65;
+const COMPLIANCE_AMPLITUDE = 0.12;
+const COMPLIANCE_CYCLE_DAYS = 14;
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -105,13 +112,13 @@ function avgMastery(topics: TopicRow[]): number {
 
 function decayTopics(topics: TopicRow[], tuning: SchedulerTuning): void {
   for (const topic of topics) {
-    const decayed = topic.masteryScore * Math.exp(-0.015 * tuning.decayConstant);
+    const decayed = topic.masteryScore * Math.exp(-DAILY_DECAY_RATE * tuning.decayConstant);
     topic.masteryScore = clamp(decayed, 0, 1);
   }
 }
 
 function applyPracticeGain(topic: TopicRow, sessionType: "lecture" | "practice", completedRatio: number): void {
-  const qualitySignal = sessionType === "practice" ? 0.74 : 0.58;
+  const qualitySignal = sessionType === "practice" ? PRACTICE_QUALITY_SIGNAL : LECTURE_QUALITY_SIGNAL;
   const alpha = 0.14 + topic.confidenceScore * 0.08;
   const delta = alpha * completedRatio * (qualitySignal - topic.masteryScore);
   topic.masteryScore = clamp(topic.masteryScore + delta, 0, 1);
@@ -263,7 +270,7 @@ function deterministicComplianceSequence(seed: string, days: number): number[] {
   const random = mulberry32(seedFromString(seed));
   const values: number[] = [];
   for (let i = 0; i < days; i++) {
-    const baseline = 0.65 + 0.12 * Math.sin((2 * Math.PI * i) / 14);
+    const baseline = BASE_COMPLIANCE + COMPLIANCE_AMPLITUDE * Math.sin((2 * Math.PI * i) / COMPLIANCE_CYCLE_DAYS);
     const noise = (random() - 0.5) * 0.28;
     values.push(Math.round(clamp(baseline + noise, 0.15, 1) * 1000) / 1000);
   }
@@ -395,9 +402,8 @@ export async function computePerformanceGap(daysLookback = 14): Promise<Performa
     );
   }
 
-  const expectedTopicCompletion = expectedTopicMinutes.size > 0
-    ? Array.from(expectedTopicMinutes.values()).reduce((sum, minutes) => sum + (minutes > 0 ? 1 : 0), 0) / expectedTopicMinutes.size
-    : 0;
+  // Expected behavior assumes scheduled topic blocks should be completed.
+  const expectedTopicCompletion = expectedTopicMinutes.size > 0 ? 1 : 0;
   const actualTopicCompletion = expectedTopicMinutes.size > 0
     ? Array.from(expectedTopicMinutes.keys()).reduce((sum, topicId) => {
         const expected = expectedTopicMinutes.get(topicId) ?? 0;

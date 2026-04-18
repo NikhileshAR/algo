@@ -72,6 +72,8 @@ export interface BlockExplanation {
   };
 }
 
+const TARGET_ACTIVE_PRACTICE_RATIO = 0.5;
+
 export interface PlannerRiskSignal {
   backlogRisk: number;
   fallingBehind: boolean;
@@ -187,7 +189,7 @@ function computePriorityBreakdown(
         pressure: Math.round(decayPressure * 1000) / 1000,
       },
       activePracticeImbalance: {
-        targetRatio: 0.5,
+        targetRatio: TARGET_ACTIVE_PRACTICE_RATIO,
         currentRatio: Math.round(profile.activePracticeRatio * 1000) / 1000,
         pressure: Math.round(practicePressure * 1000) / 1000,
       },
