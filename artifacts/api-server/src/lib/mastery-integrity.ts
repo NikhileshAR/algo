@@ -89,7 +89,7 @@ export async function ensureMasteryIntegrityOnLoad(): Promise<void> {
   }
 
   const noRealHistory = !(await hasRealSessionHistory());
-  const bootstrapCorruption = stats.highMasteryRatio > BOOTSTRAP_CORRUPTION_HIGH_MASTERY_RATIO && noRealHistory;
+  const bootstrapCorruption = stats.highMasteryRatio >= BOOTSTRAP_CORRUPTION_HIGH_MASTERY_RATIO && noRealHistory;
   const uniformNonZero = stats.allIdentical && !stats.allZero;
 
   if (!bootstrapCorruption && !uniformNonZero) {
