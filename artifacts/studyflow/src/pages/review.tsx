@@ -156,7 +156,7 @@ export default function Review() {
     );
   }
 
-  const reviewData = viewState === "success" ? data : EMPTY_WEEKLY_REVIEW;
+  const reviewData: WeeklyReview = viewState === "success" && data ? data : EMPTY_WEEKLY_REVIEW;
   const hoursDelta = reviewData.totalHours - reviewData.previousWeekHours;
   const consistencyDelta = reviewData.daysWithStudy - reviewData.previousWeekDaysWithStudy;
   const hasAnyStudy = reviewData.totalMinutes > 0;
