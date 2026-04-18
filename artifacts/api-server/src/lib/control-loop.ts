@@ -110,7 +110,7 @@ function seedFromString(input: string): number {
   return hash >>> 0;
 }
 
-function toDateString(base: Date, dayOffset: number): string {
+function formatDateWithOffset(base: Date, dayOffset: number): string {
   const d = new Date(base.getTime());
   d.setUTCDate(d.getUTCDate() + dayOffset);
   return d.toISOString().split("T")[0];
@@ -190,8 +190,9 @@ function runSingleModeSimulation(params: {
 
   for (let day = 0; day < params.horizonDays; day++) {
     decayTopics(topics, params.tuning);
-    const date = toDateString(params.startDate, day);
+    const date = formatDateWithOffset(params.startDate, day);
     const compliance = params.complianceSequence[day] ?? 0.6;
+    // EMA for discipline: keep historical stability while reacting to current compliance.
     const deterministicDiscipline = clamp(profile.disciplineScore * 0.8 + compliance * 0.2, 0.05, 1);
     profile.disciplineScore = deterministicDiscipline;
 
@@ -343,6 +344,7 @@ export function runForwardForecast(params: {
   const topicsProjection = cloneTopics(params.topics);
   const coverageProjection: number[] = [];
   for (const point of simulation.timeline) {
+    // Simplified daily mastery lift assumption for syllabus coverage projection.
     const pseudoLift = clamp(point.studiedHours / Math.max(params.profile.dailyTargetHours, 0.5), 0, 1) * 0.025;
     for (const topic of topicsProjection) {
       topic.masteryScore = clamp(topic.masteryScore + pseudoLift * (1 - topic.masteryScore), 0, 1);

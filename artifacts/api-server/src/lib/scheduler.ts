@@ -292,6 +292,7 @@ export function buildSchedulePlan(params: {
 
   const totalMinutes = Math.round(scheduledHours * 60);
   const graph = buildAdjacency(topics);
+  const topicsById = new Map<number, TopicRow>(topics.map((topic) => [topic.id, topic]));
 
   const staticOrderIndex = new Map<number, number>(
     (params.staticTopicOrder ?? []).map((topicId, index) => [topicId, index]),
@@ -300,7 +301,7 @@ export function buildSchedulePlan(params: {
   const scored = openTopics.map((topic) => {
     const deps = parseDeps(topic.prerequisites);
     const allDepsComplete = deps.every((depId) => {
-      const dep = topics.find((candidate) => candidate.id === depId);
+      const dep = topicsById.get(depId);
       return dep ? dep.masteryScore >= 0.6 || dep.isCompleted : true;
     });
 
