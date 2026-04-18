@@ -1,6 +1,11 @@
 import { Router, type IRouter } from "express";
 import { db, studySessionsTable, topicsTable } from "@workspace/db";
 import { desc } from "drizzle-orm";
+import {
+  computePerformanceGap,
+  getCurrentControlSnapshot,
+  runSimulationComparison,
+} from "../lib/control-loop";
 
 const router: IRouter = Router();
 
@@ -149,6 +154,40 @@ router.get("/analytics/weekly-review", async (_req, res): Promise<void> => {
     totalTopics: topics.length,
     completedTopics: topics.filter((t) => t.isCompleted).length,
   });
+});
+
+/**
+ * GET /api/analytics/control-loop
+ * Snapshot of forecast + gap + calibration from the control layer.
+ */
+router.get("/analytics/control-loop", async (_req, res): Promise<void> => {
+  const snapshot = await getCurrentControlSnapshot();
+  res.json(snapshot);
+});
+
+/**
+ * GET /api/analytics/performance-gap
+ * Expected vs actual behavior deviations for recent history.
+ */
+router.get("/analytics/performance-gap", async (req, res): Promise<void> => {
+  const days = Number.isFinite(Number(req.query.days))
+    ? Math.max(1, Math.min(90, Number(req.query.days)))
+    : 14;
+  const gap = await computePerformanceGap(days);
+  res.json(gap);
+});
+
+/**
+ * GET /api/analytics/experiments
+ * Runs random/static/adaptive simulations on identical compliance sequence.
+ */
+router.get("/analytics/experiments", async (req, res): Promise<void> => {
+  const horizonDays = Number.isFinite(Number(req.query.days))
+    ? Math.max(1, Math.min(365, Number(req.query.days)))
+    : 180;
+  const seed = typeof req.query.seed === "string" ? req.query.seed : undefined;
+  const comparison = await runSimulationComparison({ horizonDays, seed });
+  res.json(comparison);
 });
 
 export default router;
