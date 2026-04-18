@@ -1,9 +1,14 @@
 import type { TelemetryEvent } from "./schema";
 
 const DB_NAME = "studyflow-local";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const TELEMETRY_STORE = "telemetry_events";
 const MASTERY_STORE = "topic_mastery_states";
+export const VALIDATION_DAILY_STORE = "validation_daily_snapshots";
+export const VALIDATION_WEEKLY_STORE = "validation_weekly_summaries";
+export const VALIDATION_RESET_STORE = "validation_reset_impacts";
+export const VALIDATION_DROPOFF_STORE = "validation_dropoff_events";
+export const VALIDATION_EXECUTION_EVENT_STORE = "validation_execution_events";
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -19,6 +24,31 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(MASTERY_STORE)) {
         db.createObjectStore(MASTERY_STORE, { keyPath: "topicId" });
+      }
+      if (!db.objectStoreNames.contains(VALIDATION_DAILY_STORE)) {
+        const store = db.createObjectStore(VALIDATION_DAILY_STORE, { keyPath: "id" });
+        store.createIndex("timestamp", "timestamp", { unique: false });
+        store.createIndex("date_mode", ["date", "mode"], { unique: false });
+      }
+      if (!db.objectStoreNames.contains(VALIDATION_WEEKLY_STORE)) {
+        const store = db.createObjectStore(VALIDATION_WEEKLY_STORE, { keyPath: "id" });
+        store.createIndex("timestamp", "timestamp", { unique: false });
+        store.createIndex("week_mode", ["week_start", "week_end", "mode"], { unique: true });
+      }
+      if (!db.objectStoreNames.contains(VALIDATION_RESET_STORE)) {
+        const store = db.createObjectStore(VALIDATION_RESET_STORE, { keyPath: "id" });
+        store.createIndex("timestamp", "timestamp", { unique: false });
+        store.createIndex("reset_mode", ["reset_date", "mode"], { unique: true });
+      }
+      if (!db.objectStoreNames.contains(VALIDATION_DROPOFF_STORE)) {
+        const store = db.createObjectStore(VALIDATION_DROPOFF_STORE, { keyPath: "id" });
+        store.createIndex("timestamp", "timestamp", { unique: false });
+        store.createIndex("lastdate_mode", ["last_date", "mode"], { unique: true });
+      }
+      if (!db.objectStoreNames.contains(VALIDATION_EXECUTION_EVENT_STORE)) {
+        const store = db.createObjectStore(VALIDATION_EXECUTION_EVENT_STORE, { keyPath: "id" });
+        store.createIndex("timestamp", "timestamp", { unique: false });
+        store.createIndex("date_mode", ["date", "mode"], { unique: false });
       }
     };
 

@@ -1,18 +1,16 @@
 import { useRef, useState, useEffect, useMemo } from "react";
 import { Link, useLocation } from "wouter";
 import {
-  useGetTodaySchedule,
-  useRecalculateSchedule,
   useLogSession,
   useListSessions,
   useListTopics,
-  getGetTodayScheduleQueryKey,
+  type DailySchedule,
   getListSessionsQueryKey,
   getGetDashboardSummaryQueryKey,
   getGetPriorityTopicsQueryKey,
   getListTopicsQueryKey,
 } from "@workspace/api-client-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -44,6 +42,7 @@ import { useToast } from "@/hooks/use-toast";
 import { RefreshCw, Clock, CheckCircle2, BookOpen, Target, Info, Play, Square } from "lucide-react";
 import { recordManualTelemetryEvent, syncSchedulerTelemetryInput } from "@/lib/local-db/bridge";
 import { runFeedbackLoop } from "@/lib/feedback-loop";
+import { scheduleEndpointForMode, useValidationMode } from "@/lib/validation-mode";
 
 const logSessionSchema = z.object({
   topicId: z.coerce.number().min(1, "Select a topic"),
@@ -126,6 +125,7 @@ export default function Schedule() {
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
   const { toast } = useToast();
+  const [mode] = useValidationMode();
   const [logOpen, setLogOpen] = useState(false);
   const [selectedBlock, setSelectedBlock] = useState<{
     topicId: number;
@@ -138,10 +138,18 @@ export default function Schedule() {
   const [elapsed, setElapsed] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const { data: schedule, isLoading } = useGetTodaySchedule();
+  const { data: schedule, isLoading } = useQuery<DailySchedule>({
+    queryKey: ["schedule", "today", mode],
+    queryFn: () => fetch(scheduleEndpointForMode(mode)).then((r) => r.json()),
+  });
   const { data: topics } = useListTopics();
   const { data: sessions } = useListSessions({ limit: 200 });
-  const recalculate = useRecalculateSchedule();
+  const recalculate = useMutation({
+    mutationFn: async () => {
+      const response = await fetch(scheduleEndpointForMode(mode), { method: "POST" });
+      return response.json();
+    },
+  });
   const logSession = useLogSession();
 
   const form = useForm<z.infer<typeof logSessionSchema>>({
@@ -197,8 +205,8 @@ export default function Schedule() {
     const today = new Date().toISOString().split("T")[0];
     void syncSchedulerTelemetryInput(today).finally(() => {
       recalculate.mutate(undefined, {
-        onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() });
+          onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: ["schedule", "today", mode] });
           queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
           toast({ title: "Schedule recalculated", description: "Your plan has been updated based on your telemetry + current state." });
         },
@@ -236,7 +244,7 @@ export default function Schedule() {
           toast({ title: `Session logged · ${topicName}`, description });
           setLogOpen(false);
           form.reset();
-          queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() });
+          queryClient.invalidateQueries({ queryKey: ["schedule", "today", mode] });
           queryClient.invalidateQueries({ queryKey: getListSessionsQueryKey() });
           queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
           queryClient.invalidateQueries({ queryKey: getGetPriorityTopicsQueryKey() });

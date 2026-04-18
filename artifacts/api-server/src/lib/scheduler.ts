@@ -38,7 +38,7 @@ function forgettingRetention(mastery: number, days: number, decayConstant = 1): 
   return Math.exp((-days / Math.max(stability, MIN_DECAY_STABILITY)) * decayConstant);
 }
 
-export type SchedulerMode = "adaptive" | "static" | "random";
+export type SchedulerMode = "adaptive" | "baseline" | "static" | "random";
 
 export interface SchedulerTuning {
   decayConstant: number;
@@ -236,6 +236,17 @@ function interventionFromRisk(backlogRisk: number): PlannerRiskSignal["intervent
   return "none";
 }
 
+function baselineRank(
+  topicId: number,
+  staticOrderIndex: Map<number, number>,
+): number {
+  const rank = staticOrderIndex.get(topicId);
+  if (rank === undefined) {
+    return 0;
+  }
+  return 1 / (1 + rank);
+}
+
 function scoreBacklogRisk(
   profile: ProfileRow,
   daysUntilExamValue: number,
@@ -276,16 +287,22 @@ export function buildSchedulePlan(params: {
   const topics = params.topics;
   const openTopics = topics.filter((t) => !t.isCompleted);
   const days = daysUntil(profile.examDate);
-  const riskSignal = scoreBacklogRisk(profile, days, openTopics.length);
-  const selectedIntervention = params.forceIntervention ?? riskSignal.intervention;
+  const riskSignal = params.mode === "baseline"
+    ? { backlogRisk: 0, fallingBehind: false, intervention: "none" as const }
+    : scoreBacklogRisk(profile, days, openTopics.length);
+  const selectedIntervention = params.mode === "baseline"
+    ? "none"
+    : (params.forceIntervention ?? riskSignal.intervention);
 
-  const baseHours = geometricCapacity(profile.capacityScore, profile.disciplineScore) * tuning.growthRateMultiplier;
+  const baseHours = params.mode === "baseline"
+    ? Math.max(profile.dailyTargetHours, 0)
+    : geometricCapacity(profile.capacityScore, profile.disciplineScore) * tuning.growthRateMultiplier;
   let scheduledHours = Math.max(0, baseHours);
   let isReset = false;
 
-  if (selectedIntervention === "reduced_targets") {
+  if (params.mode !== "baseline" && selectedIntervention === "reduced_targets") {
     scheduledHours *= 0.85;
-  } else if (selectedIntervention === "early_reset") {
+  } else if (params.mode !== "baseline" && selectedIntervention === "early_reset") {
     scheduledHours = Math.max(1.5, scheduledHours * 0.75);
     isReset = true;
   }
@@ -311,12 +328,15 @@ export function buildSchedulePlan(params: {
     const staticPriority = staticRank !== undefined
       ? 1 / (1 + staticRank)
       : 0;
+    const baselinePriority = baselineRank(topic.id, staticOrderIndex);
 
     let modePriority = adaptive.priority;
     if (params.mode === "random") {
       modePriority = randomPriority;
     } else if (params.mode === "static") {
       modePriority = staticPriority;
+    } else if (params.mode === "baseline") {
+      modePriority = baselinePriority;
     }
 
     return {
@@ -341,13 +361,16 @@ export function buildSchedulePlan(params: {
   for (const row of ranked) {
     if (usedMinutes >= totalMinutes) break;
 
-    const sessionType: "lecture" | "practice" =
-      profile.activePracticeRatio >= 0.5 && row.topic.masteryScore > 0.3 ? "practice" : "lecture";
+    const sessionType: "lecture" | "practice" = params.mode === "baseline"
+      ? "lecture"
+      : (profile.activePracticeRatio >= 0.5 && row.topic.masteryScore > 0.3 ? "practice" : "lecture");
 
-    const baseMinutes = Math.min(
-      Math.round(Math.min(row.topic.estimatedHours * 60, 90)),
-      totalMinutes - usedMinutes,
-    );
+    const baseMinutes = params.mode === "baseline"
+      ? Math.min(60, totalMinutes - usedMinutes)
+      : Math.min(
+        Math.round(Math.min(row.topic.estimatedHours * 60, 90)),
+        totalMinutes - usedMinutes,
+      );
     if (baseMinutes < 15) continue;
 
     blocks.push({

@@ -1,16 +1,15 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { useRoute, useLocation } from "wouter";
 import {
-  useGetTodaySchedule,
   useLogSession,
   useListSessions,
-  getGetTodayScheduleQueryKey,
+  type DailySchedule,
   getListSessionsQueryKey,
   getGetDashboardSummaryQueryKey,
   getGetPriorityTopicsQueryKey,
   getListTopicsQueryKey,
 } from "@workspace/api-client-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
@@ -50,6 +49,8 @@ import {
 } from "@/lib/execution-engine";
 import { recordManualTelemetryEvent } from "@/lib/local-db/bridge";
 import { runFeedbackLoop } from "@/lib/feedback-loop";
+import { getValidationRepo } from "@/lib/local-db/validation";
+import { scheduleEndpointForMode, useValidationMode } from "@/lib/validation-mode";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -120,10 +121,14 @@ export default function Execute() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [mode] = useValidationMode();
 
   const blockIndex = params?.blockIndex !== undefined ? parseInt(params.blockIndex, 10) : 0;
 
-  const { data: schedule } = useGetTodaySchedule();
+  const { data: schedule } = useQuery<DailySchedule>({
+    queryKey: ["schedule", "today", mode],
+    queryFn: () => fetch(scheduleEndpointForMode(mode)).then((r) => r.json()),
+  });
   const { data: sessions } = useListSessions({ limit: 200 });
   const logSession = useLogSession();
 
@@ -226,6 +231,7 @@ export default function Execute() {
     setPendingResume(null);
     startTimer();
     setPhase("active");
+    void getValidationRepo().appendExecutionEvent({ mode, type: "started" });
   }
 
   function handleResume(persisted: NonNullable<ReturnType<typeof loadActiveExecution>>) {
@@ -237,6 +243,7 @@ export default function Execute() {
     if (intervalRef.current) clearInterval(intervalRef.current);
     intervalRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
     setPhase("active");
+    void getValidationRepo().appendExecutionEvent({ mode, type: "started" });
   }
 
   function handleAbandonResume() {
@@ -268,6 +275,7 @@ export default function Execute() {
       });
     }
     setPhase("interrupted");
+    void getValidationRepo().appendExecutionEvent({ mode, type: "interrupted" });
   }
 
   function handleResumeFromInterruption() {
@@ -318,7 +326,7 @@ export default function Execute() {
       },
       {
         onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() });
+          queryClient.invalidateQueries({ queryKey: ["schedule", "today", mode] });
           queryClient.invalidateQueries({ queryKey: getListSessionsQueryKey() });
           queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
           queryClient.invalidateQueries({ queryKey: getGetPriorityTopicsQueryKey() });

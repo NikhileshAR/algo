@@ -25,6 +25,8 @@ import * as z from "zod";
 import { useToast } from "@/hooks/use-toast";
 import { useEffect } from "react";
 import { Info } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useValidationMode } from "@/lib/validation-mode";
 
 const settingsSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -66,6 +68,7 @@ export default function Settings() {
   const { toast } = useToast();
   const { data: profile, isLoading } = useGetStudentProfile();
   const updateProfile = useUpdateStudentProfile();
+  const [mode, setMode] = useValidationMode();
 
   const form = useForm<z.infer<typeof settingsSchema>>({
     resolver: zodResolver(settingsSchema),
@@ -121,6 +124,29 @@ export default function Settings() {
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
         <p className="text-muted-foreground">Manage your exam profile and review your system state</p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Validation Mode</CardTitle>
+          <CardDescription>
+            Run 7 days baseline first, then 7 days adaptive, for clean same-user comparison.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <Select value={mode} onValueChange={(value) => setMode(value as "adaptive" | "baseline")}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="baseline">Baseline (fixed hours, sequential topics, no reset)</SelectItem>
+              <SelectItem value="adaptive">Adaptive (full scheduler + reset logic)</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Current mode affects today’s generated schedule immediately.
+          </p>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

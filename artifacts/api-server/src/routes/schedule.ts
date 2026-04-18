@@ -15,17 +15,19 @@ function formatSchedule(s: typeof schedulesTable.$inferSelect) {
 }
 
 function parseMode(raw: unknown): SchedulerMode {
-  if (raw === "static" || raw === "random" || raw === "adaptive") {
+  if (raw === "static" || raw === "random" || raw === "adaptive" || raw === "baseline") {
     return raw;
   }
   return "adaptive";
 }
 
 async function getStaticTopicOrder(mode: SchedulerMode): Promise<number[] | undefined> {
-  if (mode !== "static") {
+  if (mode !== "static" && mode !== "baseline") {
     return undefined;
   }
-  const topics = await db.select().from(topicsTable).orderBy(desc(topicsTable.priorityScore));
+  const topics = mode === "baseline"
+    ? await db.select().from(topicsTable).orderBy(topicsTable.id)
+    : await db.select().from(topicsTable).orderBy(desc(topicsTable.priorityScore));
   return topics.map((topic) => topic.id);
 }
 

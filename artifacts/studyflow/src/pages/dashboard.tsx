@@ -14,6 +14,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ArrowRight, Clock3, CircleCheck, PlayCircle, AlertTriangle, RefreshCw, Sparkles } from "lucide-react";
+import { runValidationPipeline } from "@/lib/local-db/validation";
+import { scheduleEndpointForMode, useValidationMode } from "@/lib/validation-mode";
 
 type RiskSignal = {
   backlogRisk: number;
@@ -95,6 +97,7 @@ function blockReason(block: BlockWithExplanation): string {
 
 export default function Dashboard() {
   const [, setLocation] = useLocation();
+  const [mode] = useValidationMode();
 
   const { data: profile, isError: profileError, isLoading: profileLoading } = useGetStudentProfile({
     query: { queryKey: getGetStudentProfileQueryKey(), retry: false },
@@ -103,8 +106,8 @@ export default function Dashboard() {
   const { data: sessions } = useListSessions({ limit: 200 });
 
   const { data: scheduleWithControl, isLoading: scheduleLoading } = useQuery<ExtendedSchedule>({
-    queryKey: ["schedule", "today", "extended"],
-    queryFn: () => fetch("/api/schedule/today").then((r) => r.json()),
+    queryKey: ["schedule", "today", "extended", mode],
+    queryFn: () => fetch(scheduleEndpointForMode(mode)).then((r) => r.json()),
     refetchInterval: 10000,
   });
 
@@ -130,6 +133,31 @@ export default function Dashboard() {
 
   const completion = totalMinutes > 0 ? Math.min(100, Math.round((completedMinutes / totalMinutes) * 100)) : 0;
   const remainingMinutes = Math.max(totalMinutes - completedMinutes, 0);
+
+  useEffect(() => {
+    if (!profile || !scheduleWithControl || !sessions || !topics) return;
+    const date = toIsoDay();
+    const actualHours = sessions
+      .filter((s) => isIsoDayMatch(s.studiedAt, date))
+      .reduce((sum, s) => sum + s.durationMinutes / 60, 0);
+    const sessionsCompleted = sessions.filter((s) => isIsoDayMatch(s.studiedAt, date)).length;
+    const weightedNow = topics.length > 0
+      ? topics.reduce((sum, topic) => sum + topic.masteryScore * Math.max(topic.priorityScore, 0.01), 0) /
+        topics.reduce((sum, topic) => sum + Math.max(topic.priorityScore, 0.01), 0)
+      : 0;
+    void runValidationPipeline({
+      mode,
+      date,
+      plannedHours: scheduleWithControl.scheduledHours ?? 0,
+      actualHours,
+      sessionsCompleted,
+      resetTriggered: Boolean(scheduleWithControl.isReset),
+      disciplineScore: profile.disciplineScore,
+      capacityEstimate: profile.capacityScore,
+      highPriorityProgress: weightedNow,
+      backlogLevel: 1 - completion / 100,
+    });
+  }, [mode, profile, scheduleWithControl, sessions, topics, completion]);
 
   const paceBehind =
     Boolean(scheduleWithControl?.control?.forecast?.riskSignal?.fallingBehind) ||
