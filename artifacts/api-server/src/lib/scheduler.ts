@@ -100,6 +100,10 @@ interface PriorityBreakdown {
   explainability: BlockExplanation;
 }
 
+/**
+ * Deterministic hash used to rank topics in random mode.
+ * This makes random mode reproducible for the same day/topic seed.
+ */
 function deterministicHash(seed: string): number {
   let h = 2166136261;
   for (let i = 0; i < seed.length; i++) {
@@ -300,8 +304,9 @@ export function buildSchedulePlan(params: {
 
     const adaptive = computePriorityBreakdown(topic, profile, days, tuning, graph);
     const randomPriority = deterministicHash(`${params.dateSeed}:${topic.id}`);
-    const staticPriority = staticOrderIndex.has(topic.id)
-      ? 1 / (1 + (staticOrderIndex.get(topic.id) ?? Number.MAX_SAFE_INTEGER))
+    const staticRank = staticOrderIndex.get(topic.id);
+    const staticPriority = staticRank !== undefined
+      ? 1 / (1 + staticRank)
       : 0;
 
     let modePriority = adaptive.priority;

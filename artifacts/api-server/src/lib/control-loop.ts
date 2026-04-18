@@ -72,11 +72,18 @@ const COMPLIANCE_AMPLITUDE = 0.12;
 const COMPLIANCE_CYCLE_DAYS = 14;
 const TOPIC_DIFFICULTY_SCALE_MAX = 5;
 const MS_PER_DAY = 86_400_000;
+const DEVIATION_UNDER_THRESHOLD = -0.12;
+const COMPLETION_UNDER_THRESHOLD = -0.08;
+const DEVIATION_OVER_THRESHOLD = 0.12;
+const COMPLETION_OVER_THRESHOLD = 0.08;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+/**
+ * Mulberry32 PRNG used for deterministic simulation compliance generation.
+ */
 function mulberry32(seed: number): () => number {
   let t = seed >>> 0;
   return function random() {
@@ -274,6 +281,8 @@ function deterministicComplianceSequence(seed: string, days: number): number[] {
   const random = mulberry32(seedFromString(seed));
   const values: number[] = [];
   for (let i = 0; i < days; i++) {
+    // Compliance follows a cyclical baseline (weekly/biweekly motivation rhythm)
+    // plus bounded deterministic noise so experiments remain reproducible.
     const baseline = BASE_COMPLIANCE + COMPLIANCE_AMPLITUDE * Math.sin((2 * Math.PI * i) / COMPLIANCE_CYCLE_DAYS);
     const noise = (random() - 0.5) * 0.28;
     values.push(Math.round(clamp(baseline + noise, 0.15, 1) * 1000) / 1000);
@@ -461,8 +470,8 @@ export function calibrateParameters(params: {
     ? params.gap.studyHoursDeviation / params.gap.expectedHours
     : 0;
   const completionBias = params.gap.topicCompletionDeviation;
-  const under = deviationRatio < -0.12 || completionBias < -0.08;
-  const over = deviationRatio > 0.12 || completionBias > 0.08;
+  const under = deviationRatio < DEVIATION_UNDER_THRESHOLD || completionBias < COMPLETION_UNDER_THRESHOLD;
+  const over = deviationRatio > DEVIATION_OVER_THRESHOLD || completionBias > COMPLETION_OVER_THRESHOLD;
 
   const detectedBias = under ? "overestimation" : over ? "underestimation" : "balanced";
   const biasDirection = under ? 1 : over ? -1 : 0;

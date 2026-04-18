@@ -21,6 +21,14 @@ function parseMode(raw: unknown): SchedulerMode {
   return "adaptive";
 }
 
+async function getStaticTopicOrder(mode: SchedulerMode): Promise<number[] | undefined> {
+  if (mode !== "static") {
+    return undefined;
+  }
+  const topics = await db.select().from(topicsTable).orderBy(desc(topicsTable.priorityScore));
+  return topics.map((topic) => topic.id);
+}
+
 router.get("/schedule/today", async (req, res): Promise<void> => {
   const today = new Date().toISOString().split("T")[0];
 
@@ -42,9 +50,7 @@ router.get("/schedule/today", async (req, res): Promise<void> => {
 
   const mode = parseMode(req.query.mode);
   const snapshot = await getCurrentControlSnapshot();
-  const staticTopicOrder = mode === "static"
-    ? (await db.select().from(topicsTable).orderBy(desc(topicsTable.priorityScore))).map((topic) => topic.id)
-    : undefined;
+  const staticTopicOrder = await getStaticTopicOrder(mode);
   const scheduleData = await recalculateSchedule({
     mode,
     staticTopicOrder,
@@ -74,9 +80,7 @@ router.get("/schedule/today", async (req, res): Promise<void> => {
 router.post("/schedule/today", async (req, res): Promise<void> => {
   const mode = parseMode(req.query.mode);
   const snapshot = await getCurrentControlSnapshot();
-  const staticTopicOrder = mode === "static"
-    ? (await db.select().from(topicsTable).orderBy(desc(topicsTable.priorityScore))).map((topic) => topic.id)
-    : undefined;
+  const staticTopicOrder = await getStaticTopicOrder(mode);
   const scheduleData = await recalculateSchedule({
     mode,
     staticTopicOrder,
