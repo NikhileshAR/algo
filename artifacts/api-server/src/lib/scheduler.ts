@@ -343,20 +343,20 @@ function deriveBehavioralContext(params: {
     );
   }
   for (const [topicId, skipCount] of overrideSkipCounts.entries()) {
-    if (skipCount < 2) continue;
+    if (skipCount < 3) continue;
     const topic = topicsById.get(topicId);
     if (!topic) continue;
-    const skipIntensity = clamp((skipCount - 1) / 4, 0, 1);
+    const skipIntensity = clamp((skipCount - 2) / 4, 0, 1);
     const existing = topicSignals.get(topicId);
     const mergedStruggle = Math.max(existing?.struggleScore ?? 0, clamp(0.55 + skipIntensity * 0.35, 0, 1));
     const mergedReduceFactor = Math.min(
       existing?.reduceBlockFactor ?? 1,
-      clamp(1 - 0.4 * skipIntensity, 0.5, 1),
+      clamp(1 - 0.55 * skipIntensity, 0.35, 1),
     );
-    const delayHeavySessions = topic.difficultyLevel >= 4 || topic.masteryScore < 0.35;
-    const mergedPriorityMultiplier = delayHeavySessions
-      ? Math.min(existing?.priorityMultiplier ?? 1, clamp(1 - 0.3 * skipIntensity, 0.7, 1))
-      : (existing?.priorityMultiplier ?? 1);
+    const mergedPriorityMultiplier = Math.max(
+      existing?.priorityMultiplier ?? 1,
+      clamp(1 + 0.35 * skipIntensity, 1, 1.35),
+    );
     topicSignals.set(topicId, {
       struggleScore: Math.round(mergedStruggle * 1000) / 1000,
       reduceBlockFactor: mergedReduceFactor,

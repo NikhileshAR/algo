@@ -15,7 +15,7 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ArrowRight, Clock3, CircleCheck, PlayCircle, AlertTriangle, RefreshCw, Sparkles } from "lucide-react";
+import { ArrowRight, Clock3, CircleCheck, PlayCircle, AlertTriangle, RefreshCw, Sparkles, Flame, TrendingUp } from "lucide-react";
 import { useLocalHydration } from "@/hooks/use-local-hydration";
 import { useBoundedLoading } from "@/hooks/use-bounded-loading";
 import { logObservabilityEvent } from "@/lib/observability";
@@ -30,15 +30,44 @@ type ControlSnapshot = {
   forecast?: {
     expectedCoverageByExamDate?: number;
     riskSignal?: RiskSignal;
+    overrideAdjustedProjection?: {
+      completionProbability: number;
+      requiredHoursPerDay: number;
+      coachingMessage: string;
+    };
   };
   performanceGap?: {
     studyHoursDeviation?: number;
   };
 };
 
+type EngagementState = {
+  mode: "normal" | "low_capacity" | "reentry";
+  inactiveDays: number;
+  identity: {
+    streakDays: number;
+    daysStudiedThisWeek: number;
+    label: string;
+    showUpMessage: string;
+  };
+  autonomyGuard: {
+    isEarned: boolean;
+    consistencyScore: number;
+    frictionMultiplier: number;
+  };
+  confidenceCalibration: {
+    overconfidenceRatio: number;
+    underconfidenceRatio: number;
+    sessionTypeRecommendation: "more_practice" | "more_lecture" | "balanced";
+  };
+  emotionalFeedback: string;
+  forecastActionMessage: string;
+};
+
 type ExtendedSchedule = DailySchedule & {
   riskSignal?: RiskSignal;
   control?: ControlSnapshot;
+  engagement?: EngagementState;
 };
 
 type MissionFallbackBlock = {
@@ -109,6 +138,10 @@ function interventionMessage(intervention: RiskSignal["intervention"] | undefine
   if (intervention === "priority_concentration") return "Tomorrow auto-focuses on fewer high-impact topics.";
   if (intervention === "reduced_targets") return "Tomorrow auto-trims targets to restore consistency.";
   return "Tomorrow will adapt automatically based on today’s completion.";
+}
+
+function identityStreakIcon(streakDays: number): string {
+  return streakDays >= 3 ? "🔥" : streakDays >= 1 ? "⚡" : "✨";
 }
 
 function blockReason(block: BlockWithExplanation): string {
@@ -252,6 +285,24 @@ export default function Dashboard() {
   const suggestedCatchupHours = Math.max(MIN_CATCHUP_HOURS, Math.round(fellShortHours * 10) / 10);
   const intervention = scheduleWithControl?.riskSignal?.intervention ?? scheduleWithControl?.control?.forecast?.riskSignal?.intervention;
 
+  // Engagement state from schedule response (server-computed)
+  const engagement = scheduleWithControl?.engagement;
+  const engagementMode = engagement?.mode ?? "normal";
+  const isReentryMode = engagementMode === "reentry";
+  const isLowCapacityMode = engagementMode === "low_capacity";
+  const identity = engagement?.identity;
+  const autonomyEarned = engagement?.autonomyGuard?.isEarned ?? false;
+  const confidenceCalibration = engagement?.confidenceCalibration;
+
+  // Forecast action message — always risk + action (from server, with server-level context)
+  const forecastActionMsg = engagement?.forecastActionMessage
+    ?? (paceBehind
+      ? `You're slightly behind pace — adding ~${suggestedCatchupHours.toFixed(1)}h/day this week will bring you back on track.`
+      : "You're on track. Keep following today's sequence.");
+
+  // Emotional feedback from server, fallback to generic
+  const emotionalFeedbackMsg = engagement?.emotionalFeedback ?? "";
+
   const numberedBlocks = useMemo(() => {
     let spent = completedMinutes;
     let assignedCurrent = false;
@@ -388,7 +439,51 @@ export default function Dashboard() {
         <p className="text-sm text-muted-foreground mt-1">Start now. The plan updates automatically tomorrow.</p>
       </div>
 
-      {schedule?.isReset && (
+      {/* Identity anchoring — streak + consistency label */}
+      {identity && (identity.streakDays > 0 || identity.daysStudiedThisWeek > 0) && (
+        <Card className="border-emerald-200/60 bg-emerald-50/40 dark:border-emerald-800/40 dark:bg-emerald-950/20">
+          <CardContent className="py-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-base">{identityStreakIcon(identity.streakDays)}</span>
+              <span className="font-medium text-emerald-800 dark:text-emerald-300">{identity.label}</span>
+              <span className="text-muted-foreground">·</span>
+              <span className="text-muted-foreground text-xs">{identity.showUpMessage}</span>
+            </div>
+            {identity.streakDays >= 1 && (
+              <Badge variant="outline" className="shrink-0 text-xs border-emerald-400 text-emerald-700 dark:text-emerald-300">
+                <Flame className="h-3 w-3 mr-1" />
+                {identity.streakDays}d streak
+              </Badge>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Re-entry mode banner */}
+      {isReentryMode && (
+        <Card className="border-blue-200/60 bg-blue-50/40 dark:border-blue-800/40 dark:bg-blue-950/20">
+          <CardContent className="py-3 text-sm text-foreground flex items-center gap-2">
+            <TrendingUp className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0" />
+            <span>
+              <span className="font-medium">Restart mode.</span>{" "}
+              {emotionalFeedbackMsg || "Welcome back — just two short blocks today. No backlog carried forward."}
+            </span>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Low-capacity day banner */}
+      {isLowCapacityMode && !isReentryMode && (
+        <Card className="border-amber-200/60 bg-amber-50/40 dark:border-amber-800/40 dark:bg-amber-950/20">
+          <CardContent className="py-3 text-sm text-foreground flex items-center gap-2">
+            <RefreshCw className="h-4 w-4 text-amber-600 shrink-0" />
+            {emotionalFeedbackMsg || "Recovery day — lighter plan prepared so you can rebuild without pressure."}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Standard reset banner */}
+      {schedule?.isReset && !isReentryMode && !isLowCapacityMode && (
         <Card className="border-primary/30 bg-primary/5">
           <CardContent className="py-3 text-sm text-foreground flex items-center gap-2">
             <RefreshCw className="h-4 w-4 text-primary" />
@@ -406,6 +501,8 @@ export default function Dashboard() {
           <CardDescription>
             {showFallbackMission
               ? "Recovery mode mission · lightweight priority blocks while your full schedule reloads."
+              : isReentryMode
+              ? "Re-entry mission · just two easy wins to rebuild momentum"
               : hasMission
               ? `Target ${formatHoursFromMinutes(totalMinutes)}h · ${remainingMinutes} min left · ${paceBehind ? "Needs catch-up" : "On track"}`
               : "Your mission appears here automatically every day."}
@@ -459,7 +556,7 @@ export default function Dashboard() {
 
           <Link href={missionCtaHref}>
             <Button className="w-full" data-testid="button-open-schedule-flow">
-              Start Focused Session
+              {isReentryMode ? "Start Re-entry Session" : "Start Focused Session"}
               <ArrowRight className="h-4 w-4 ml-2" />
             </Button>
           </Link>
@@ -486,29 +583,43 @@ export default function Dashboard() {
               <Clock3 className="h-4 w-4 mt-0.5 text-muted-foreground" />
               <span>Too early to estimate — start building momentum with today’s first block.</span>
             </div>
-          ) : hasMission && paceBehind ? (
-            <div className="flex items-start gap-2" role="status" aria-live="polite">
-              <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-600" />
-              <span>At your current pace, you may not complete the syllabus on time.</span>
-            </div>
           ) : (
             <div className="flex items-start gap-2" role="status" aria-live="polite">
-              <Clock3 className="h-4 w-4 mt-0.5 text-muted-foreground" />
-              <span>{hasMission ? "You are on pace. Keep following today’s sequence." : "Set up today’s mission, then start your first focus block."}</span>
-            </div>
-          )}
-
-          {hasMission && paceBehind && !isColdStart && (
-            <div className="flex items-start gap-2" role="status" aria-live="polite">
-              <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-600" />
-              <span>You need about <span className="font-medium">+{suggestedCatchupHours.toFixed(1)} hours/day</span> this week to stay on track.</span>
+              {hasMission && paceBehind
+                ? <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-600 shrink-0" />
+                : <Clock3 className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />}
+              <span>
+                {hasMission
+                  ? forecastActionMsg
+                  : "Set up today’s mission, then start your first focus block."}
+              </span>
             </div>
           )}
 
           <div className="flex items-start gap-2">
-            <CircleCheck className="h-4 w-4 mt-0.5 text-emerald-600" />
+            <CircleCheck className="h-4 w-4 mt-0.5 text-emerald-600 shrink-0" />
             <span>{interventionMessage(intervention)}</span>
           </div>
+
+          {/* Confidence calibration hint */}
+          {confidenceCalibration && confidenceCalibration.sessionTypeRecommendation !== "balanced" && (
+            <div className="flex items-start gap-2 text-muted-foreground text-xs">
+              <Sparkles className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <span>
+                {confidenceCalibration.sessionTypeRecommendation === "more_practice"
+                  ? "Confidence is running ahead of mastery on some topics — more practice sessions will close the gap."
+                  : "You’re underestimating yourself on several topics — a few easy revision wins will recalibrate."}
+              </span>
+            </div>
+          )}
+
+          {/* Autonomy guard acknowledgment */}
+          {autonomyEarned && (
+            <div className="flex items-start gap-2 text-muted-foreground text-xs">
+              <CircleCheck className="h-3.5 w-3.5 mt-0.5 text-emerald-500 shrink-0" />
+              <span>Your consistency this week has earned more flexible swaps today.</span>
+            </div>
+          )}
 
           {(() => {
               const confidenceLevel =
@@ -544,9 +655,19 @@ export default function Dashboard() {
         </CardContent>
       </Card>
 
+      {/* Emotional feedback card — shown after any session progress */}
+      {completion > 0 && emotionalFeedbackMsg && !isReentryMode && !isLowCapacityMode && (
+        <Card className="bg-muted/20 border-dashed">
+          <CardContent className="py-3 text-xs text-muted-foreground flex items-center gap-2">
+            <Sparkles className="h-4 w-4 shrink-0" />
+            {emotionalFeedbackMsg}
+          </CardContent>
+        </Card>
+      )}
+
       <Card className="bg-muted/20 border-dashed">
         <CardContent className="py-3 text-xs text-muted-foreground flex items-center gap-2">
-          <Sparkles className="h-4 w-4" />
+          <Sparkles className="h-4 w-4 shrink-0" />
           Open app → start focused session → keep your streak alive.
         </CardContent>
       </Card>

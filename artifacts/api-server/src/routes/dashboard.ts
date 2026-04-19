@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { db, studentProfileTable, topicsTable, studySessionsTable, schedulesTable } from "@workspace/db";
 import { desc, eq, gte, sql } from "drizzle-orm";
 import { ensureMasteryIntegrityOnLoad } from "../lib/mastery-integrity";
+import { getEngagementState } from "../lib/engagement";
 
 const router: IRouter = Router();
 
@@ -63,6 +64,12 @@ router.get("/dashboard/summary", async (req, res): Promise<void> => {
     }
   }
 
+  const engagement = await getEngagementState({
+    fallingBehind: false,
+    catchUpHoursPerDay: 0,
+    completionPctToday: 0,
+  });
+
   res.json({
     daysUntilExam: daysUntil(profile.examDate),
     totalTopics,
@@ -75,6 +82,7 @@ router.get("/dashboard/summary", async (req, res): Promise<void> => {
     streakDays,
     examName: profile.examName,
     examDate: profile.examDate,
+    engagement,
   });
 });
 
