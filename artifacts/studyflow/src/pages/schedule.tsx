@@ -80,6 +80,18 @@ const STUDY_DAY_START_HOUR = 6;
 const STUDY_DAY_DURATION_HOURS = 16;
 const ON_TRACK_GRACE_MINUTES = 10;
 const MOMENTUM_THRESHOLD_SECONDS = 10 * 60;
+const TOTAL_PREPARATION_HORIZON_DAYS = 730;
+
+function getFocusSignal(daysUntilExam?: number): string {
+  if (typeof daysUntilExam !== "number") {
+    return "Focus: Balanced phase";
+  }
+  const elapsed = clamp(TOTAL_PREPARATION_HORIZON_DAYS - Math.max(0, daysUntilExam), 0, TOTAL_PREPARATION_HORIZON_DAYS);
+  const journeyCompleted = elapsed / TOTAL_PREPARATION_HORIZON_DAYS;
+  return journeyCompleted >= 0.72 || daysUntilExam <= 210
+    ? "Focus: 12th-heavy (late phase)"
+    : "Focus: Balanced phase";
+}
 
 function getMomentumLabel(active: boolean, elapsedSeconds: number, completionPct: number, completedMinutes: number): string {
   if (active && elapsedSeconds >= MOMENTUM_THRESHOLD_SECONDS) return "Building momentum";
@@ -278,6 +290,7 @@ export default function Schedule() {
   const todayIso = new Date().toISOString().split("T")[0];
   const scheduleBlocks = Array.isArray(schedule?.blocks) ? schedule.blocks : [];
   const scheduleHours = typeof schedule?.scheduledHours === "number" ? schedule.scheduledHours : 0;
+  const focusSignal = getFocusSignal(typeof schedule?.daysUntilExam === "number" ? schedule.daysUntilExam : undefined);
   const hasSchedule = Boolean(schedule);
   const missionTotalMinutes = Math.max(0, Math.round(scheduleHours * 60));
   const loggedMinutesToday = useMemo(
@@ -351,6 +364,7 @@ export default function Schedule() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Today's Schedule</h1>
           <p className="text-muted-foreground">{today}</p>
+          <p className="text-xs text-muted-foreground mt-1">{focusSignal}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => openLog()} data-testid="button-log-session">

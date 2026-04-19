@@ -22,6 +22,19 @@ function parseDeps(prerequisites: string): number[] {
 }
 
 const MIN_DECAY_STABILITY = 0.1;
+const TOTAL_PREPARATION_HORIZON_DAYS = 730;
+const BRIDGE_REVISION_MINUTES = 15;
+const LATE_PHASE_TWELFTH_TARGET_SHARE = 0.7;
+const LATE_PHASE_TWELFTH_MIN_SHARE = 0.6;
+
+type AcademicClass = 11 | 12 | "unknown";
+type PreparationPhase = "foundation" | "transition" | "consolidation";
+
+interface PreparationPhaseState {
+  phase: PreparationPhase;
+  daysRemaining: number;
+  journeyCompletedRatio: number;
+}
 
 function daysSinceStudied(lastStudiedAt: Date | null): number {
   if (!lastStudiedAt) return 999;
@@ -72,6 +85,13 @@ export interface BlockExplanation {
     confidence: number;
     pressure: number;
   };
+  temporalRelevance: {
+    phase: PreparationPhase;
+    journeyCompletedRatio: number;
+    daysRemaining: number;
+    topicClass: AcademicClass;
+    temporalWeight: number;
+  };
 }
 
 const TARGET_ACTIVE_PRACTICE_RATIO = 0.5;
@@ -99,6 +119,7 @@ type ProfileRow = typeof studentProfileTable.$inferSelect;
 interface PriorityBreakdown {
   priority: number;
   explainability: BlockExplanation;
+  retention: number;
 }
 
 /**
@@ -116,6 +137,50 @@ function deterministicHash(seed: string): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function classifyTopicClass(topic: TopicRow): AcademicClass {
+  const text = `${topic.name} ${topic.subject}`.toLowerCase();
+  const class11Pattern = /\b(11|11th|xi|class\s*11|grade\s*11|std\s*11)\b/;
+  const class12Pattern = /\b(12|12th|xii|class\s*12|grade\s*12|std\s*12)\b/;
+  if (class12Pattern.test(text)) return 12;
+  if (class11Pattern.test(text)) return 11;
+  return "unknown";
+}
+
+function inferPreparationPhase(daysUntilExam: number): PreparationPhaseState {
+  const daysRemaining = Math.max(daysUntilExam, 0);
+  const elapsedDays = clamp(TOTAL_PREPARATION_HORIZON_DAYS - daysRemaining, 0, TOTAL_PREPARATION_HORIZON_DAYS);
+  const journeyCompletedRatio = elapsedDays / TOTAL_PREPARATION_HORIZON_DAYS;
+  if (journeyCompletedRatio >= 0.72 || daysRemaining <= 210) {
+    return { phase: "consolidation", daysRemaining, journeyCompletedRatio };
+  }
+  if (journeyCompletedRatio >= 0.38 || daysRemaining <= 430) {
+    return { phase: "transition", daysRemaining, journeyCompletedRatio };
+  }
+  return { phase: "foundation", daysRemaining, journeyCompletedRatio };
+}
+
+function computeTemporalWeight(params: {
+  topicClass: AcademicClass;
+  phaseState: PreparationPhaseState;
+  masteryScore: number;
+  retention: number;
+  unlocksTwelfthTopics: number;
+}): number {
+  const latePressure = clamp((params.phaseState.journeyCompletedRatio - 0.45) / 0.45, 0, 1);
+  if (params.topicClass === 12) {
+    return 1 + 0.85 * latePressure;
+  }
+  if (params.topicClass === 11) {
+    let weight = 1 - 0.6 * latePressure;
+    const lowMasteryException = params.masteryScore < 0.4 ? 0.35 : 0;
+    const decayException = params.retention < 0.45 ? 0.2 : 0;
+    const prerequisiteException = params.unlocksTwelfthTopics > 0 ? Math.min(0.25, params.unlocksTwelfthTopics * 0.08) : 0;
+    weight += lowMasteryException + decayException + prerequisiteException;
+    return clamp(weight, 0.3, 1.15);
+  }
+  return 1;
 }
 
 function computeMasteryVariance(masteryValues: number[]): { variance: number; allZero: boolean } {
@@ -166,6 +231,8 @@ function computePriorityBreakdown(
   daysUntilExam: number,
   tuning: SchedulerTuning,
   graph: Map<number, number[]>,
+  topicClasses: Map<number, AcademicClass>,
+  phaseState: PreparationPhaseState,
 ): PriorityBreakdown {
   const daysDormant = daysSinceStudied(topic.lastStudiedAt);
   const retention = forgettingRetention(topic.masteryScore, daysDormant, tuning.decayConstant);
@@ -187,6 +254,17 @@ function computePriorityBreakdown(
   );
   const performancePressure = clamp(1 - topic.confidenceScore, 0, 1);
   const disciplineMod = 1 / Math.max(profile.disciplineScore, 0.1);
+  const topicClass = topicClasses.get(topic.id) ?? "unknown";
+  const unlockedDownstreamTwelfthTopics = (graph.get(topic.id) ?? []).filter(
+    (childId) => topicClasses.get(childId) === 12,
+  ).length;
+  const temporalWeight = computeTemporalWeight({
+    topicClass,
+    phaseState,
+    masteryScore: topic.masteryScore,
+    retention,
+    unlocksTwelfthTopics: unlockedDownstreamTwelfthTopics,
+  });
 
   const total = (
     weightage * 0.3 +
@@ -194,7 +272,7 @@ function computePriorityBreakdown(
     lowMastery * 0.35 +
     dependencyPressure * 0.1 +
     decayPressure * 0.05
-  ) * disciplineMod;
+  ) * disciplineMod * temporalWeight;
 
   return {
     priority: total,
@@ -224,7 +302,15 @@ function computePriorityBreakdown(
         confidence: Math.round(topic.confidenceScore * 1000) / 1000,
         pressure: Math.round(performancePressure * 1000) / 1000,
       },
+      temporalRelevance: {
+        phase: phaseState.phase,
+        journeyCompletedRatio: Math.round(phaseState.journeyCompletedRatio * 1000) / 1000,
+        daysRemaining: phaseState.daysRemaining,
+        topicClass,
+        temporalWeight: Math.round(temporalWeight * 1000) / 1000,
+      },
     },
+    retention,
   };
 }
 
@@ -268,6 +354,40 @@ function scoreBacklogRisk(
   };
 }
 
+function isLatePhaseEleventhException(row: { topic: TopicRow; retention: number; topicClass: AcademicClass }): boolean {
+  if (row.topicClass !== 11) return true;
+  const lowMastery = row.topic.masteryScore < 0.4;
+  const decayed = row.retention < 0.45;
+  return lowMastery || decayed;
+}
+
+function chooseSessionType(
+  profile: ProfileRow,
+  topic: TopicRow,
+  daysUntilExam: number,
+  phase: PreparationPhase,
+): "lecture" | "practice" {
+  const examPracticeBias = clamp(1 - daysUntilExam / 220, 0, 1);
+  const blendedPracticeBias = profile.activePracticeRatio * 0.6 + examPracticeBias * 0.4;
+  if (phase === "consolidation" && topic.masteryScore >= 0.5) {
+    return "practice";
+  }
+  return blendedPracticeBias >= 0.45 && topic.masteryScore > 0.25 ? "practice" : "lecture";
+}
+
+function baseBlockMinutes(
+  topic: TopicRow,
+  remainingMinutes: number,
+  phase: PreparationPhase,
+): number {
+  const phaseCap = phase === "consolidation" ? 60 : 90;
+  const raw = Math.round(Math.min(topic.estimatedHours * 60, phaseCap));
+  const adjusted = phase === "consolidation" && topic.masteryScore < 0.3
+    ? Math.min(raw, 45)
+    : raw;
+  return Math.min(adjusted, remainingMinutes);
+}
+
 export function buildSchedulePlan(params: {
   profile: ProfileRow;
   topics: TopicRow[];
@@ -295,6 +415,7 @@ export function buildSchedulePlan(params: {
   }
   const openTopics = topics.filter((t) => !t.isCompleted);
   const days = daysUntil(profile.examDate);
+  const phaseState = inferPreparationPhase(days);
   const riskSignal = scoreBacklogRisk(profile, days, openTopics.length);
   const selectedIntervention = params.forceIntervention ?? riskSignal.intervention;
 
@@ -312,6 +433,9 @@ export function buildSchedulePlan(params: {
   const totalMinutes = Math.round(scheduledHours * 60);
   const graph = buildAdjacency(topics);
   const topicsById = new Map<number, TopicRow>(topics.map((topic) => [topic.id, topic]));
+  const topicClasses = new Map<number, AcademicClass>(
+    topics.map((topic) => [topic.id, classifyTopicClass(topic)]),
+  );
 
   const staticOrderIndex = new Map<number, number>(
     (params.staticTopicOrder ?? []).map((topicId, index) => [topicId, index]),
@@ -319,12 +443,18 @@ export function buildSchedulePlan(params: {
 
   const scored = openTopics.map((topic) => {
     const deps = parseDeps(topic.prerequisites);
-    const allDepsComplete = deps.every((depId) => {
+    const incompleteDeps = deps.filter((depId) => {
       const dep = topicsById.get(depId);
-      return dep ? dep.masteryScore >= 0.6 || dep.isCompleted : true;
+      return dep ? !(dep.masteryScore >= 0.6 || dep.isCompleted) : false;
     });
+    const topicClass = topicClasses.get(topic.id) ?? "unknown";
+    const canProceedWithBridge =
+      phaseState.phase === "consolidation" &&
+      topicClass === 12 &&
+      incompleteDeps.some((depId) => topicClasses.get(depId) === 11);
+    const allDepsComplete = incompleteDeps.length === 0;
 
-    const adaptive = computePriorityBreakdown(topic, profile, days, tuning, graph);
+    const adaptive = computePriorityBreakdown(topic, profile, days, tuning, graph, topicClasses, phaseState);
     const randomPriority = deterministicHash(`${params.dateSeed}:${topic.id}`);
     const staticRank = staticOrderIndex.get(topic.id);
     const staticPriority = staticRank !== undefined
@@ -341,45 +471,118 @@ export function buildSchedulePlan(params: {
     return {
       topic,
       deps,
-      allDepsComplete,
-      priority: allDepsComplete ? modePriority : 0,
+      topicClass,
+      incompleteDeps,
+      eligible: allDepsComplete || canProceedWithBridge,
+      priority: allDepsComplete || canProceedWithBridge ? modePriority : 0,
       explainability: adaptive.explainability,
+      retention: adaptive.retention,
     };
   });
 
   scored.sort((a, b) => b.priority - a.priority);
 
-  let ranked = scored.filter((s) => s.allDepsComplete);
+  let ranked = scored.filter((s) => s.eligible);
   if (selectedIntervention === "priority_concentration" || selectedIntervention === "early_reset") {
     ranked = ranked.slice(0, Math.max(2, Math.ceil(ranked.length * 0.35)));
   }
 
   const blocks: ScheduleBlock[] = [];
   let usedMinutes = 0;
+  let twelfthMinutes = 0;
+  const bridgedTopicIds = new Set<number>();
 
-  for (const row of ranked) {
-    if (usedMinutes >= totalMinutes) break;
+  const pickBridgePrerequisite = (row: typeof ranked[number]): TopicRow | null => {
+    if (row.topicClass !== 12 || row.deps.length === 0) return null;
+    const candidates = row.deps
+      .map((depId) => topicsById.get(depId))
+      .filter((dep): dep is TopicRow => Boolean(dep) && (topicClasses.get(dep!.id) === 11))
+      .filter((dep) => !bridgedTopicIds.has(dep.id))
+      .filter((dep) => dep.masteryScore < 0.75 || daysSinceStudied(dep.lastStudiedAt) >= 10 || !dep.isCompleted);
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => {
+      const aRisk = (1 - a.masteryScore) + Math.min(daysSinceStudied(a.lastStudiedAt) / 30, 1);
+      const bRisk = (1 - b.masteryScore) + Math.min(daysSinceStudied(b.lastStudiedAt) / 30, 1);
+      return bRisk - aRisk;
+    });
+    return candidates[0] ?? null;
+  };
 
-    const sessionType: "lecture" | "practice" =
-      profile.activePracticeRatio >= 0.5 && row.topic.masteryScore > 0.3 ? "practice" : "lecture";
+  const pushBlock = (row: typeof ranked[number]): void => {
+    if (usedMinutes >= totalMinutes) return;
 
-    const baseMinutes = Math.min(
-      Math.round(Math.min(row.topic.estimatedHours * 60, 90)),
-      totalMinutes - usedMinutes,
-    );
-    if (baseMinutes < 15) continue;
+    const remainingBefore = totalMinutes - usedMinutes;
+    const bridgePrerequisite = pickBridgePrerequisite(row);
+    if (bridgePrerequisite && remainingBefore >= BRIDGE_REVISION_MINUTES + 15) {
+      blocks.push({
+        topicId: bridgePrerequisite.id,
+        topicName: `${bridgePrerequisite.name} (Bridge revision)`,
+        subject: bridgePrerequisite.subject,
+        sessionType: "lecture",
+        durationMinutes: BRIDGE_REVISION_MINUTES,
+        priorityScore: Math.round(row.priority * 1000) / 1000,
+        masteryScore: bridgePrerequisite.masteryScore,
+        explanation: row.explainability,
+      });
+      usedMinutes += BRIDGE_REVISION_MINUTES;
+      bridgedTopicIds.add(bridgePrerequisite.id);
+    }
 
+    const remaining = totalMinutes - usedMinutes;
+    const minutes = baseBlockMinutes(row.topic, remaining, phaseState.phase);
+    if (minutes < 15) return;
+    const sessionType = chooseSessionType(profile, row.topic, days, phaseState.phase);
     blocks.push({
       topicId: row.topic.id,
       topicName: row.topic.name,
       subject: row.topic.subject,
       sessionType,
-      durationMinutes: baseMinutes,
+      durationMinutes: minutes,
       priorityScore: Math.round(row.priority * 1000) / 1000,
       masteryScore: row.topic.masteryScore,
       explanation: row.explainability,
     });
-    usedMinutes += baseMinutes;
+    usedMinutes += minutes;
+    if (row.topicClass === 12) {
+      twelfthMinutes += minutes;
+    }
+  };
+
+  if (phaseState.phase === "consolidation") {
+    const twelfthQueue = ranked.filter((row) => row.topicClass === 12);
+    const supportQueue = ranked.filter((row) => row.topicClass !== 12 && isLatePhaseEleventhException(row));
+    let twelfthIndex = 0;
+    let supportIndex = 0;
+
+    while (usedMinutes < totalMinutes) {
+      const currentShare = usedMinutes > 0 ? twelfthMinutes / usedMinutes : 1;
+      const needsTwelfth = currentShare < LATE_PHASE_TWELFTH_TARGET_SHARE;
+
+      let row: typeof ranked[number] | undefined;
+      if (needsTwelfth && twelfthIndex < twelfthQueue.length) {
+        row = twelfthQueue[twelfthIndex++];
+      } else if (supportIndex < supportQueue.length) {
+        row = supportQueue[supportIndex++];
+      } else if (twelfthIndex < twelfthQueue.length) {
+        row = twelfthQueue[twelfthIndex++];
+      }
+
+      if (!row) break;
+      pushBlock(row);
+    }
+
+    while (
+      usedMinutes < totalMinutes &&
+      (usedMinutes === 0 || twelfthMinutes / usedMinutes < LATE_PHASE_TWELFTH_MIN_SHARE) &&
+      twelfthIndex < twelfthQueue.length
+    ) {
+      pushBlock(twelfthQueue[twelfthIndex++]);
+    }
+  } else {
+    for (const row of ranked) {
+      if (usedMinutes >= totalMinutes) break;
+      pushBlock(row);
+    }
   }
 
   return {
@@ -480,6 +683,10 @@ export async function recomputePriorities(): Promise<void> {
 
   const graph = buildAdjacency(topics);
   const days = daysUntil(profile.examDate);
+  const phaseState = inferPreparationPhase(days);
+  const topicClasses = new Map<number, AcademicClass>(
+    topics.map((topic) => [topic.id, classifyTopicClass(topic)]),
+  );
   const tuning: SchedulerTuning = {
     decayConstant: 1,
     capacitySmoothing: 0.8,
@@ -492,6 +699,8 @@ export async function recomputePriorities(): Promise<void> {
       days,
       tuning,
       graph,
+      topicClasses,
+      phaseState,
     );
     await db
       .update(topicsTable)
