@@ -1,5 +1,5 @@
-import { db, topicsTable, studentProfileTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { db, topicsTable, studentProfileTable, studySessionsTable } from "@workspace/db";
+import { desc, eq, gte } from "drizzle-orm";
 import { logger } from "./logger";
 
 export interface ScheduleBlock {
@@ -35,6 +35,15 @@ const MAX_BRIDGE_BLOCKS_PER_DAY = 3;
  */
 const ELEVENTH_EXPOSURE_BOOST_MAX = 1.6;
 const ELEVENTH_EXPOSURE_BOOST_DAYS = 7;
+const BEHAVIOR_LOOKBACK_DAYS = 21;
+const BEHAVIOR_MIN_SESSIONS = 8;
+const BEHAVIOR_STABILITY_MAX_BLEND = 0.45;
+const CAPACITY_MAX_DOWNSHIFT = 0.35;
+const CAPACITY_MAX_UPSHIFT = 0.15;
+const MAX_SPLIT_BLOCKS_PER_DAY = 2;
+const MIN_BLOCK_MINUTES = 15;
+
+const DEFAULT_SLOT_PERFORMANCE = [1, 0.88, 0.75, 0.62] as const;
 
 type AcademicClass = 11 | 12 | "unknown";
 type PreparationPhase = "foundation" | "transition" | "consolidation";
@@ -150,6 +159,179 @@ interface PriorityBreakdown {
   priority: number;
   explainability: BlockExplanation;
   retention: number;
+}
+
+interface TopicBehaviorSignal {
+  struggleScore: number;
+  reduceBlockFactor: number;
+  splitRecommended: boolean;
+  alternateSessionType: "lecture" | "practice" | null;
+}
+
+interface BehavioralContext {
+  reliability: number;
+  effectiveCapacityFactor: number;
+  preferredHighDemandProgress: number;
+  slotPerformance: [number, number, number, number];
+  hasPersonalizedEnergyModel: boolean;
+  topicSignals: Map<number, TopicBehaviorSignal>;
+  preExamTransition: number;
+}
+
+function defaultBehavioralContext(daysUntilExamValue: number): BehavioralContext {
+  return {
+    reliability: 0,
+    effectiveCapacityFactor: 1,
+    preferredHighDemandProgress: 0.15,
+    slotPerformance: [...DEFAULT_SLOT_PERFORMANCE] as [number, number, number, number],
+    hasPersonalizedEnergyModel: false,
+    topicSignals: new Map<number, TopicBehaviorSignal>(),
+    preExamTransition: smoothstep(150, 14, daysUntilExamValue),
+  };
+}
+
+function qualityFromSession(
+  session: typeof studySessionsTable.$inferSelect,
+): number {
+  const normalizedScore =
+    session.testScore !== null && session.testScoreMax !== null
+      ? clamp(session.testScore / Math.max(session.testScoreMax, 1), 0, 1)
+      : null;
+  const focusQuality = clamp(
+    1 - (session.distractionMinutes ?? 0) / Math.max(session.durationMinutes, 1),
+    0,
+    1,
+  );
+  const durationQuality = clamp(session.durationMinutes / 45, 0.4, 1);
+  if (normalizedScore === null) {
+    return clamp(focusQuality * 0.75 + durationQuality * 0.25, 0, 1);
+  }
+  return clamp(
+    normalizedScore * 0.6 + focusQuality * 0.25 + durationQuality * 0.15,
+    0,
+    1,
+  );
+}
+
+function deriveBehavioralContext(params: {
+  profile: ProfileRow;
+  topics: TopicRow[];
+  sessions: Array<typeof studySessionsTable.$inferSelect>;
+  daysUntilExamValue: number;
+}): BehavioralContext {
+  const base = defaultBehavioralContext(params.daysUntilExamValue);
+  if (params.sessions.length === 0) return base;
+
+  const reliability = smoothstep(BEHAVIOR_MIN_SESSIONS, 30, params.sessions.length);
+  const effectiveBlend = Math.min(BEHAVIOR_STABILITY_MAX_BLEND, reliability);
+  const recentWindowDays = BEHAVIOR_LOOKBACK_DAYS;
+
+  let totalMinutes = 0;
+  let effectiveMinutes = 0;
+  const slotMinutes = [0, 0, 0, 0];
+  const slotQualityMinutes = [0, 0, 0, 0];
+  const topicAccumulator = new Map<
+    number,
+    { lowRating: number; partial: number; lectureCount: number; practiceCount: number }
+  >();
+
+  for (const session of params.sessions) {
+    const quality = qualityFromSession(session);
+    totalMinutes += session.durationMinutes;
+    effectiveMinutes += session.durationMinutes * quality;
+
+    const hour = new Date(session.studiedAt).getHours();
+    const slot = hour < 12 ? 0 : hour < 17 ? 1 : hour < 21 ? 2 : 3;
+    slotMinutes[slot] += session.durationMinutes;
+    slotQualityMinutes[slot] += session.durationMinutes * quality;
+
+    const current = topicAccumulator.get(session.topicId) ?? {
+      lowRating: 0,
+      partial: 0,
+      lectureCount: 0,
+      practiceCount: 0,
+    };
+    const normalizedScore =
+      session.testScore !== null && session.testScoreMax !== null
+        ? session.testScore / Math.max(session.testScoreMax, 1)
+        : null;
+    const distractionRatio = (session.distractionMinutes ?? 0) / Math.max(session.durationMinutes, 1);
+    if (normalizedScore !== null && normalizedScore < 0.55) {
+      current.lowRating += 1;
+    }
+    if (distractionRatio > 0.35 || session.durationMinutes < 20) {
+      current.partial += 1;
+    }
+    if (session.sessionType === "practice") current.practiceCount += 1;
+    else current.lectureCount += 1;
+    topicAccumulator.set(session.topicId, current);
+  }
+
+  const dailyActualHours = totalMinutes / 60 / recentWindowDays;
+  const disciplineFactor = clamp(
+    totalMinutes > 0 ? effectiveMinutes / totalMinutes : params.profile.disciplineScore,
+    0.45,
+    1.05,
+  );
+  const dailyEffectiveHours = dailyActualHours * disciplineFactor;
+  const nominalCapacity = Math.max(geometricCapacity(params.profile.capacityScore, params.profile.disciplineScore), 0.1);
+  const rawCapacityFactor = clamp(dailyEffectiveHours / nominalCapacity, 0.6, 1.1);
+  const effectiveCapacityFactor = clamp(
+    1 + (rawCapacityFactor - 1) * effectiveBlend,
+    1 - CAPACITY_MAX_DOWNSHIFT,
+    1 + CAPACITY_MAX_UPSHIFT,
+  );
+
+  const slotPerformanceRaw = slotMinutes.map((minutes, index) =>
+    minutes > 0 ? slotQualityMinutes[index] / minutes : DEFAULT_SLOT_PERFORMANCE[index],
+  );
+  const slotMean = slotPerformanceRaw.reduce((sum, value) => sum + value, 0) / slotPerformanceRaw.length;
+  const slotPerformance = slotPerformanceRaw.map((value) =>
+    clamp(value / Math.max(slotMean, 0.01), 0.7, 1.25),
+  ) as [number, number, number, number];
+
+  const weightedSlotCenter = slotPerformance.reduce((sum, value, index) => sum + value * index, 0) /
+    Math.max(slotPerformance.reduce((sum, value) => sum + value, 0), 0.01);
+  const preferredProgress = clamp(weightedSlotCenter / 3, 0, 1);
+  const hasPersonalizedEnergyModel = reliability >= 0.25 && slotMinutes.filter((minutes) => minutes >= 45).length >= 2;
+  const preferredHighDemandProgress = hasPersonalizedEnergyModel
+    ? clamp(0.7 * preferredProgress + 0.3 * base.preferredHighDemandProgress, 0, 1)
+    : base.preferredHighDemandProgress;
+
+  const topicSignals = new Map<number, TopicBehaviorSignal>();
+  for (const [topicId, stats] of topicAccumulator.entries()) {
+    const struggleEvents = stats.lowRating + stats.partial;
+    if (struggleEvents < 2) continue;
+    const struggleScore = clamp(struggleEvents / 4, 0, 1);
+    const reduceBlockFactor = clamp(1 - 0.35 * struggleScore * effectiveBlend, 0.6, 1);
+    const dominantType =
+      stats.practiceCount === stats.lectureCount
+        ? null
+        : stats.practiceCount > stats.lectureCount
+          ? "practice"
+          : "lecture";
+    topicSignals.set(topicId, {
+      struggleScore: Math.round(struggleScore * 1000) / 1000,
+      reduceBlockFactor,
+      splitRecommended: struggleScore >= 0.5 && reliability >= 0.25,
+      alternateSessionType:
+        dominantType === null
+          ? null
+          : dominantType === "practice"
+            ? "lecture"
+            : "practice",
+    });
+  }
+
+  return {
+    reliability,
+    effectiveCapacityFactor,
+    preferredHighDemandProgress,
+    slotPerformance,
+    hasPersonalizedEnergyModel,
+    topicSignals,
+    preExamTransition: base.preExamTransition,
+  };
 }
 
 /**
@@ -330,6 +512,7 @@ function computePriorityBreakdown(
   topicClasses: Map<number, AcademicClass>,
   phaseState: PreparationPhaseState,
   eleventhExposureBoost: number,
+  behavioral: BehavioralContext,
 ): PriorityBreakdown {
   const daysDormant = daysSinceStudied(topic.lastStudiedAt);
   const retention = forgettingRetention(topic.masteryScore, daysDormant, tuning.decayConstant);
@@ -368,6 +551,31 @@ function computePriorityBreakdown(
   const hoursStudied = hoursSinceStudied(topic.lastStudiedAt);
   const needsSpacedRepetition = retention < 0.45;
   const recencyMultiplier = computeRecencyMultiplier(hoursStudied, needsSpacedRepetition);
+  const hasHistory = topic.lastStudiedAt !== null || topic.testsCount > 0;
+  const preExamWeight = clamp(
+    hasHistory
+      ? 1 + 0.22 * behavioral.preExamTransition
+      : 1 - 0.35 * behavioral.preExamTransition,
+    0.6,
+    1.25,
+  );
+
+  const overconfidenceSignal =
+    smoothstep(0.15, 0.55, topic.confidenceScore - topic.masteryScore) *
+    smoothstep(0.65, 0.25, topic.masteryScore);
+  const underconfidenceSignal =
+    smoothstep(0.15, 0.55, topic.masteryScore - topic.confidenceScore) *
+    smoothstep(0.55, 0.95, topic.masteryScore);
+  const divergenceMultiplier = clamp(
+    1 + 0.35 * overconfidenceSignal - 0.25 * underconfidenceSignal,
+    0.75,
+    1.35,
+  );
+
+  const struggleSignal = behavioral.topicSignals.get(topic.id);
+  const struggleMultiplier = struggleSignal
+    ? clamp(1 + 0.2 * struggleSignal.struggleScore * behavioral.reliability, 1, 1.2)
+    : 1;
 
   // Proactive 11th maintenance: soft boost for class-11 topics when recent exposure is sparse.
   const topicClassForBoost = topicClasses.get(topic.id) ?? "unknown";
@@ -379,7 +587,7 @@ function computePriorityBreakdown(
     lowMastery * 0.35 +
     dependencyPressure * 0.1 +
     decayPressure * 0.05
-  ) * disciplineMod * temporalWeight * recencyMultiplier * exposureBoost;
+  ) * disciplineMod * temporalWeight * recencyMultiplier * exposureBoost * divergenceMultiplier * preExamWeight * struggleMultiplier;
 
   return {
     priority: total,
@@ -480,13 +688,31 @@ function chooseSessionType(
   topic: TopicRow,
   daysUntilExam: number,
   phase: PreparationPhase,
+  behavioral: BehavioralContext,
 ): "lecture" | "practice" {
   const examPracticeBias = clamp(1 - daysUntilExam / 220, 0, 1);
+  const preExamBias = clamp(examPracticeBias * 0.6 + behavioral.preExamTransition * 0.4, 0, 1);
   const blendedPracticeBias = profile.activePracticeRatio * 0.6 + examPracticeBias * 0.4;
+  const overconfidenceSignal =
+    smoothstep(0.15, 0.55, topic.confidenceScore - topic.masteryScore) *
+    smoothstep(0.65, 0.25, topic.masteryScore);
+  const underconfidenceSignal =
+    smoothstep(0.15, 0.55, topic.masteryScore - topic.confidenceScore) *
+    smoothstep(0.55, 0.95, topic.masteryScore);
+  if (overconfidenceSignal > 0.35) {
+    return "practice";
+  }
+  if (underconfidenceSignal > 0.45) {
+    return "lecture";
+  }
+  const topicSignal = behavioral.topicSignals.get(topic.id);
+  if (topicSignal?.alternateSessionType && topicSignal.struggleScore >= 0.5) {
+    return topicSignal.alternateSessionType;
+  }
   if (phase === "consolidation" && topic.masteryScore >= 0.5) {
     return "practice";
   }
-  return blendedPracticeBias >= 0.45 && topic.masteryScore > 0.25 ? "practice" : "lecture";
+  return (blendedPracticeBias * 0.7 + preExamBias * 0.3) >= 0.45 && topic.masteryScore > 0.25 ? "practice" : "lecture";
 }
 
 function baseBlockMinutes(
@@ -510,6 +736,7 @@ export function buildSchedulePlan(params: {
   staticTopicOrder?: number[];
   tuning?: SchedulerTuning;
   forceIntervention?: PlannerRiskSignal["intervention"] | null;
+  behavioralContext?: BehavioralContext;
 }): PlannerOutput {
   const tuning = params.tuning ?? {
     decayConstant: 1,
@@ -529,6 +756,7 @@ export function buildSchedulePlan(params: {
   }
   const openTopics = topics.filter((t) => !t.isCompleted);
   const days = daysUntil(profile.examDate);
+  const behavioral = params.behavioralContext ?? defaultBehavioralContext(days);
 
   // Build engagement context for hybrid phase inference from topic state.
   const topicClassesEarly = new Map<number, AcademicClass>(
@@ -556,7 +784,10 @@ export function buildSchedulePlan(params: {
   const eleventhExposureBoost = 1 + (ELEVENTH_EXPOSURE_BOOST_MAX - 1) *
     smoothstep(1, ELEVENTH_EXPOSURE_BOOST_DAYS, daysSinceLast11thStudy);
 
-  const baseHours = geometricCapacity(profile.capacityScore, profile.disciplineScore) * tuning.growthRateMultiplier;
+  const baseHours =
+    geometricCapacity(profile.capacityScore, profile.disciplineScore) *
+    tuning.growthRateMultiplier *
+    behavioral.effectiveCapacityFactor;
   let scheduledHours = Math.max(0, baseHours);
   let isReset = false;
 
@@ -589,7 +820,17 @@ export function buildSchedulePlan(params: {
       incompleteDeps.some((depId) => topicClasses.get(depId) === 11);
     const allDepsComplete = incompleteDeps.length === 0;
 
-    const adaptive = computePriorityBreakdown(topic, profile, days, tuning, graph, topicClasses, phaseState, eleventhExposureBoost);
+    const adaptive = computePriorityBreakdown(
+      topic,
+      profile,
+      days,
+      tuning,
+      graph,
+      topicClasses,
+      phaseState,
+      eleventhExposureBoost,
+      behavioral,
+    );
     const randomPriority = deterministicHash(`${params.dateSeed}:${topic.id}`);
     const staticRank = staticOrderIndex.get(topic.id);
     const staticPriority = staticRank !== undefined
@@ -627,6 +868,7 @@ export function buildSchedulePlan(params: {
   let twelfthMinutes = 0;
   const bridgedTopicIds = new Set<number>();
   let bridgeBlockCount = 0;
+  let splitBlockCount = 0;
 
   const pickBridgePrerequisite = (row: typeof ranked[number]): TopicRow | null => {
     if (row.topicClass !== 12 || row.deps.length === 0) return null;
@@ -671,9 +913,14 @@ export function buildSchedulePlan(params: {
     }
 
     const remaining = totalMinutes - usedMinutes;
-    const minutes = baseBlockMinutes(row.topic, remaining, phaseState.phase);
-    if (minutes < 15) return;
-    const sessionType = chooseSessionType(profile, row.topic, days, phaseState.phase);
+    const behaviorSignal = behavioral.topicSignals.get(row.topic.id);
+    const rawMinutes = baseBlockMinutes(row.topic, remaining, phaseState.phase);
+    const reducedMinutes = behaviorSignal
+      ? Math.round(rawMinutes * behaviorSignal.reduceBlockFactor / 5) * 5
+      : rawMinutes;
+    const minutes = Math.min(Math.max(reducedMinutes, MIN_BLOCK_MINUTES), remaining);
+    if (minutes < MIN_BLOCK_MINUTES) return;
+    const sessionType = chooseSessionType(profile, row.topic, days, phaseState.phase, behavioral);
     blocks.push({
       topicId: row.topic.id,
       topicName: row.topic.name,
@@ -687,6 +934,38 @@ export function buildSchedulePlan(params: {
     usedMinutes += minutes;
     if (row.topicClass === 12) {
       twelfthMinutes += minutes;
+    }
+
+    const remainingAfter = totalMinutes - usedMinutes;
+    if (
+      behaviorSignal?.splitRecommended &&
+      splitBlockCount < MAX_SPLIT_BLOCKS_PER_DAY &&
+      remainingAfter >= MIN_BLOCK_MINUTES
+    ) {
+      const splitMinutes = Math.max(
+        MIN_BLOCK_MINUTES,
+        Math.min(20, Math.round(Math.max(minutes * 0.45, MIN_BLOCK_MINUTES) / 5) * 5, remainingAfter),
+      );
+      const splitType = behaviorSignal.alternateSessionType
+        ? behaviorSignal.alternateSessionType
+        : sessionType === "lecture"
+          ? "practice"
+          : "lecture";
+      blocks.push({
+        topicId: row.topic.id,
+        topicName: `${row.topic.name} (Focused reinforcement)`,
+        subject: row.topic.subject,
+        sessionType: splitType,
+        durationMinutes: splitMinutes,
+        priorityScore: Math.round(row.priority * 1000) / 1000,
+        masteryScore: row.topic.masteryScore,
+        explanation: row.explainability,
+      });
+      usedMinutes += splitMinutes;
+      if (row.topicClass === 12) {
+        twelfthMinutes += splitMinutes;
+      }
+      splitBlockCount++;
     }
   };
 
@@ -741,14 +1020,28 @@ export function buildSchedulePlan(params: {
   blocks.sort((a, b) => {
     const isBridgeA = a.topicName.endsWith("(Bridge revision)") ? 1 : 0;
     const isBridgeB = b.topicName.endsWith("(Bridge revision)") ? 1 : 0;
-    // energy demand: high when difficulty is high and mastery is low.
-    const difficulty = (block: ScheduleBlock) =>
-      topicClasses.get(block.topicId) === 11 ? 0.4 : 0.6; // 12th assumed harder on average
-    const energyA = isBridgeA ? 0 : (1 - a.masteryScore) * difficulty(a);
-    const energyB = isBridgeB ? 0 : (1 - b.masteryScore) * difficulty(b);
-    // Sort descending by energy demand (high energy first), bridges last.
+    const topicA = topicsById.get(a.topicId);
+    const topicB = topicsById.get(b.topicId);
+    const demandA = isBridgeA
+      ? 0
+      : (1 - a.masteryScore) * clamp((topicA?.difficultyLevel ?? 3) / 5, 0.2, 1);
+    const demandB = isBridgeB
+      ? 0
+      : (1 - b.masteryScore) * clamp((topicB?.difficultyLevel ?? 3) / 5, 0.2, 1);
     if (isBridgeA !== isBridgeB) return isBridgeA - isBridgeB;
-    return energyB - energyA;
+    if (!behavioral.hasPersonalizedEnergyModel) {
+      return demandB - demandA;
+    }
+    const targetA = clamp((1 - demandA) * 0.9 + demandA * behavioral.preferredHighDemandProgress, 0, 1);
+    const targetB = clamp((1 - demandB) * 0.9 + demandB * behavioral.preferredHighDemandProgress, 0, 1);
+    const slotA = Math.round(targetA * 3);
+    const slotB = Math.round(targetB * 3);
+    const weightedTargetA = targetA - 0.08 * demandA * (behavioral.slotPerformance[slotA] - 1);
+    const weightedTargetB = targetB - 0.08 * demandB * (behavioral.slotPerformance[slotB] - 1);
+    if (Math.abs(weightedTargetA - weightedTargetB) > 1e-6) {
+      return weightedTargetA - weightedTargetB;
+    }
+    return demandB - demandA;
   });
 
   return {
@@ -762,6 +1055,26 @@ export function buildSchedulePlan(params: {
       intervention: selectedIntervention,
     },
   };
+}
+
+async function loadBehavioralContext(
+  profile: ProfileRow,
+  topics: TopicRow[],
+  daysUntilExamValue: number,
+): Promise<BehavioralContext> {
+  const since = new Date(Date.now() - BEHAVIOR_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+  const sessions = await db
+    .select()
+    .from(studySessionsTable)
+    .where(gte(studySessionsTable.studiedAt, since))
+    .orderBy(desc(studySessionsTable.studiedAt))
+    .limit(800);
+  return deriveBehavioralContext({
+    profile,
+    topics,
+    sessions,
+    daysUntilExamValue,
+  });
 }
 
 export async function recalculateSchedule(options?: {
@@ -784,6 +1097,8 @@ export async function recalculateSchedule(options?: {
 
   const topics = await db.select().from(topicsTable);
   const today = new Date().toISOString().split("T")[0];
+  const days = daysUntil(profile.examDate);
+  const behavioralContext = await loadBehavioralContext(profile, topics, days);
 
   const output = buildSchedulePlan({
     profile,
@@ -793,6 +1108,7 @@ export async function recalculateSchedule(options?: {
     staticTopicOrder: options?.staticTopicOrder,
     tuning: options?.tuning,
     forceIntervention: options?.forceIntervention ?? null,
+    behavioralContext,
   });
 
   logger.info(
@@ -871,6 +1187,7 @@ export async function recomputePriorities(): Promise<void> {
     : ELEVENTH_EXPOSURE_BOOST_DAYS;
   const eleventhExposureBoost = 1 + (ELEVENTH_EXPOSURE_BOOST_MAX - 1) *
     smoothstep(1, ELEVENTH_EXPOSURE_BOOST_DAYS, daysSinceLast11thStudy);
+  const behavioralContext = await loadBehavioralContext(profile, topics, days);
 
   for (const topic of topics) {
     const { priority } = computePriorityBreakdown(
@@ -882,6 +1199,7 @@ export async function recomputePriorities(): Promise<void> {
       topicClasses,
       phaseState,
       eleventhExposureBoost,
+      behavioralContext,
     );
     await db
       .update(topicsTable)
