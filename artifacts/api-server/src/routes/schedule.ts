@@ -4,6 +4,7 @@ import { and, desc, eq, gte, lte } from "drizzle-orm";
 import { recalculateSchedule, type PlannerRiskSignal, type SchedulerMode } from "../lib/scheduler";
 import { getCurrentControlSnapshot } from "../lib/control-loop";
 import { ensureMasteryIntegrityOnLoad } from "../lib/mastery-integrity";
+import { getEngagementState } from "../lib/engagement";
 import { z } from "zod/v4";
 
 const router: IRouter = Router();
@@ -11,6 +12,8 @@ const SWAP_SOFT_LIMIT_PER_DAY = 2;
 const RESISTANCE_SKIP_THRESHOLD = 3;
 const RESISTANCE_WINDOW_DAYS = 14;
 const INTEGRITY_GUIDANCE_THRESHOLD = 0.55;
+const REENTRY_MAX_BLOCKS = 2;
+const REENTRY_MAX_BLOCK_MINUTES = 25;
 
 type OverrideIntent = "productive_override" | "avoidance_override" | "neutral_override";
 
@@ -337,8 +340,15 @@ function tightenIntervention(
   baseIntervention: PlannerRiskSignal["intervention"],
   overrideIntel: Awaited<ReturnType<typeof getOverrideIntelligence>>,
   integrity: Awaited<ReturnType<typeof computeDailyPlanIntegrity>>,
+  engagementMode: Awaited<ReturnType<typeof getEngagementState>>["mode"],
 ): PlannerRiskSignal["intervention"] {
+  // Re-entry always forces a reset; takes highest priority
+  if (engagementMode === "reentry") return "early_reset";
   if (baseIntervention === "early_reset") return baseIntervention;
+  // Low-capacity day: escalate to at least reduced_targets
+  if (engagementMode === "low_capacity" && baseIntervention === "none") {
+    return "reduced_targets";
+  }
   if (overrideIntel.impactLabel === "HIGH" || integrity.score < 0.45) {
     return baseIntervention === "none" ? "priority_concentration" : baseIntervention;
   }
@@ -346,6 +356,37 @@ function tightenIntervention(
     if (baseIntervention === "none") return "reduced_targets";
   }
   return baseIntervention;
+}
+
+function applyReentryFilter(blocks: ScheduleBlockPayload[]): ScheduleBlockPayload[] {
+  // Keep only real topic blocks (no synthetic bridge/reinforcement blocks)
+  const realBlocks = blocks.filter(
+    (b) => !b.topicName.includes("(Bridge revision)") && !b.topicName.includes("(Focused reinforcement)"),
+  );
+  // Prefer highest-mastery topics (easiest wins) for re-entry
+  return realBlocks
+    .slice()
+    .sort((a, b) => b.masteryScore - a.masteryScore)
+    .slice(0, REENTRY_MAX_BLOCKS)
+    .map((b) => ({ ...b, durationMinutes: Math.min(b.durationMinutes, REENTRY_MAX_BLOCK_MINUTES) }));
+}
+
+function applyConfidenceCalibrationToBlocks(
+  blocks: ScheduleBlockPayload[],
+  recommendation: "more_practice" | "more_lecture" | "balanced",
+): ScheduleBlockPayload[] {
+  if (recommendation === "balanced") return blocks;
+  // Behavioral adjustment only: flip session type for non-bridge blocks if calibration recommends it
+  return blocks.map((b) => {
+    if (b.topicName.includes("(Bridge revision)")) return b;
+    if (recommendation === "more_practice" && b.sessionType === "lecture" && b.masteryScore >= 0.3) {
+      return { ...b, sessionType: "practice" as const };
+    }
+    if (recommendation === "more_lecture" && b.sessionType === "practice" && b.masteryScore < 0.4) {
+      return { ...b, sessionType: "lecture" as const };
+    }
+    return b;
+  });
 }
 
 async function getStaticTopicOrder(mode: SchedulerMode): Promise<number[] | undefined> {
@@ -378,17 +419,23 @@ router.get("/schedule/today", async (req, res): Promise<void> => {
     .limit(1);
 
   if (existing) {
-    const snapshot = await getCurrentControlSnapshot();
-    const [overrideBudget, resistanceSignals, planIntegrity] = await Promise.all([
+    const [snapshot, overrideBudget, resistanceSignals, planIntegrity, engagement] = await Promise.all([
+      getCurrentControlSnapshot(),
       getOverrideIntelligence(existing.date),
       getResistanceSignals(existing.date),
       computeDailyPlanIntegrity(existing.date),
+      getEngagementState({
+        fallingBehind: false,
+        catchUpHoursPerDay: 0,
+        completionPctToday: 0,
+      }),
     ]);
     res.json({
       ...formatSchedule(existing),
       overrideBudget,
       resistanceSignals,
       planIntegrity,
+      engagement,
       control: snapshot,
       overrideImpact: {
         score: overrideBudget.impactScore,
@@ -400,27 +447,49 @@ router.get("/schedule/today", async (req, res): Promise<void> => {
   }
 
   const mode = parseMode(req.query.mode);
-  const [snapshot, overrideIntel, planIntegrity] = await Promise.all([
+  const [snapshot, overrideIntel, planIntegrity, engagement] = await Promise.all([
     getCurrentControlSnapshot(),
     getOverrideIntelligence(today),
     computeDailyPlanIntegrity(today),
+    getEngagementState({
+      fallingBehind: false,
+      catchUpHoursPerDay: 0,
+      completionPctToday: 0,
+    }),
   ]);
   const staticTopicOrder = await getStaticTopicOrder(mode);
   const scheduleData = await recalculateSchedule({
     mode,
     staticTopicOrder,
     tuning: snapshot.calibration.tuning,
-    forceIntervention: tightenIntervention(snapshot.forecast.riskSignal.intervention, overrideIntel, planIntegrity),
+    forceIntervention: tightenIntervention(
+      snapshot.forecast.riskSignal.intervention,
+      overrideIntel,
+      planIntegrity,
+      engagement.mode,
+    ),
   });
+
+  // Behavioral post-processing: re-entry filter and confidence calibration
+  const isReentryMode = engagement.mode === "reentry";
+  let finalBlocks = isReentryMode
+    ? applyReentryFilter(scheduleData.blocks)
+    : applyConfidenceCalibrationToBlocks(
+        scheduleData.blocks,
+        engagement.confidenceCalibration.sessionTypeRecommendation,
+      );
+  const finalScheduledHours = isReentryMode
+    ? Math.round((finalBlocks.reduce((s, b) => s + b.durationMinutes, 0) / 60) * 1000) / 1000
+    : scheduleData.scheduledHours;
 
   const [created] = await db
     .insert(schedulesTable)
     .values({
       date: scheduleData.date,
-      scheduledHours: scheduleData.scheduledHours,
-      blocks: JSON.stringify(scheduleData.blocks),
+      scheduledHours: finalScheduledHours,
+      blocks: JSON.stringify(finalBlocks),
       daysUntilExam: scheduleData.daysUntilExam,
-      isReset: scheduleData.isReset,
+      isReset: scheduleData.isReset || isReentryMode,
     })
     .returning();
 
@@ -435,6 +504,7 @@ router.get("/schedule/today", async (req, res): Promise<void> => {
     overrideBudget: createdOverrideBudget,
     resistanceSignals,
     planIntegrity: createdPlanIntegrity,
+    engagement,
     mode,
     riskSignal: scheduleData.riskSignal,
     overrideImpact: {
@@ -450,29 +520,50 @@ router.post("/schedule/today", async (req, res): Promise<void> => {
   await ensureMasteryIntegrityOnLoad();
   const mode = parseMode(req.query.mode);
   const today = new Date().toISOString().split("T")[0];
-  const [snapshot, overrideIntel, planIntegrity] = await Promise.all([
+  const [snapshot, overrideIntel, planIntegrity, engagement] = await Promise.all([
     getCurrentControlSnapshot(),
     getOverrideIntelligence(today),
     computeDailyPlanIntegrity(today),
+    getEngagementState({
+      fallingBehind: false,
+      catchUpHoursPerDay: 0,
+      completionPctToday: 0,
+    }),
   ]);
   const staticTopicOrder = await getStaticTopicOrder(mode);
   const scheduleData = await recalculateSchedule({
     mode,
     staticTopicOrder,
     tuning: snapshot.calibration.tuning,
-    forceIntervention: tightenIntervention(snapshot.forecast.riskSignal.intervention, overrideIntel, planIntegrity),
+    forceIntervention: tightenIntervention(
+      snapshot.forecast.riskSignal.intervention,
+      overrideIntel,
+      planIntegrity,
+      engagement.mode,
+    ),
   });
 
   await db.delete(schedulesTable).where(eq(schedulesTable.date, scheduleData.date));
+
+  const isReentryMode = engagement.mode === "reentry";
+  const finalBlocks = isReentryMode
+    ? applyReentryFilter(scheduleData.blocks)
+    : applyConfidenceCalibrationToBlocks(
+        scheduleData.blocks,
+        engagement.confidenceCalibration.sessionTypeRecommendation,
+      );
+  const finalScheduledHours = isReentryMode
+    ? Math.round((finalBlocks.reduce((s, b) => s + b.durationMinutes, 0) / 60) * 1000) / 1000
+    : scheduleData.scheduledHours;
 
   const [created] = await db
     .insert(schedulesTable)
     .values({
       date: scheduleData.date,
-      scheduledHours: scheduleData.scheduledHours,
-      blocks: JSON.stringify(scheduleData.blocks),
+      scheduledHours: finalScheduledHours,
+      blocks: JSON.stringify(finalBlocks),
       daysUntilExam: scheduleData.daysUntilExam,
-      isReset: scheduleData.isReset,
+      isReset: scheduleData.isReset || isReentryMode,
     })
     .returning();
 
@@ -487,6 +578,7 @@ router.post("/schedule/today", async (req, res): Promise<void> => {
     overrideBudget,
     resistanceSignals,
     planIntegrity: updatedIntegrity,
+    engagement,
     mode,
     riskSignal: scheduleData.riskSignal,
     overrideImpact: {
