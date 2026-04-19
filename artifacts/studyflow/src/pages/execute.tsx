@@ -42,6 +42,7 @@ import {
   saveLastRating,
   loadLastRating,
   completionRatio,
+  computeScheduleVersionId,
 } from "@/lib/execution-engine";
 import { recordManualTelemetryEvent } from "@/lib/local-db/bridge";
 import { runFeedbackLoop } from "@/lib/feedback-loop";
@@ -120,6 +121,10 @@ type ScheduleBlock = ReturnType<typeof useGetTodaySchedule>["data"] extends
  * schedule is no longer available (e.g. schedule was recalculated while the
  * user was away).  Only topicId/topicName/sessionType are required for the
  * session-log API call; other fields default to neutral values.
+ *
+ * Synthetic blocks must NEVER be fed to the local mastery/knowledge-state
+ * feedback loop — their masteryScore is zeroed and would corrupt local state.
+ * Track whether the locked block is synthetic via `isSyntheticBlockRef`.
  */
 function syntheticBlock(
   topicId: number,
@@ -176,6 +181,14 @@ export default function Execute() {
   // ---------------------------------------------------------------------------
   const lockedBlockRef = useRef<typeof block | null>(null);
 
+  /**
+   * Tracks whether `lockedBlockRef.current` was synthesised from sessionStorage
+   * (rather than being a real schedule block).  Synthetic blocks have zeroed
+   * mastery/priority scores and must NOT be fed into the feedback loop.
+   * The origin flag is also reported in observability events as `isSynthetic`.
+   */
+  const isSyntheticBlockRef = useRef(false);
+
   /** True once the user has left the pre_start phase. */
   const isSessionStarted = phase !== "pre_start";
 
@@ -218,6 +231,49 @@ export default function Execute() {
   // are always fresh when the effect fires.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schedule, blockIndex]);
+
+  // ---------------------------------------------------------------------------
+  // Schedule versioning
+  //
+  // A deterministic fingerprint (topicId:sessionType sequence) is captured at
+  // session start.  If the schedule refetches with a different fingerprint
+  // mid-session we record the new version as "pending" — it will be applied
+  // only after the session completes so the active execution is never
+  // disrupted.
+  // ---------------------------------------------------------------------------
+
+  const lockedScheduleVersionIdRef = useRef<string | null>(null);
+  const pendingScheduleVersionRef = useRef<string | null>(null);
+  const [scheduleUpdatedDuringSession, setScheduleUpdatedDuringSession] = useState(false);
+
+  // Log the schedule version the first time a schedule is seen on this page.
+  const scheduleVersionCreatedLoggedRef = useRef(false);
+  useEffect(() => {
+    if (!schedule || blocks.length === 0 || scheduleVersionCreatedLoggedRef.current) return;
+    scheduleVersionCreatedLoggedRef.current = true;
+    const versionId = computeScheduleVersionId(blocks);
+    logObservabilityEvent("schedule_version_created", { versionId, blockCount: blocks.length });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schedule]);
+
+  // Detect schedule version changes while a session is active and defer them.
+  useEffect(() => {
+    // Only relevant once the session has started and a version is locked.
+    if (lockedScheduleVersionIdRef.current === null) return;
+    const liveBlocks = Array.isArray(schedule?.blocks) ? schedule.blocks : [];
+    const liveVersionId = computeScheduleVersionId(liveBlocks);
+    if (
+      liveVersionId !== lockedScheduleVersionIdRef.current &&
+      pendingScheduleVersionRef.current !== liveVersionId
+    ) {
+      pendingScheduleVersionRef.current = liveVersionId;
+      logObservabilityEvent("schedule_version_deferred", {
+        lockedVersion: lockedScheduleVersionIdRef.current,
+        pendingVersion: liveVersionId,
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schedule]);
 
   // Timer
   const [elapsed, setElapsed] = useState(0);
@@ -277,6 +333,7 @@ export default function Execute() {
         sessionType: activeBlock.sessionType as "lecture" | "practice",
         startedAt: startedAtRef.current,
         elapsedSeconds: elapsed,
+        scheduleVersionId: lockedScheduleVersionIdRef.current ?? undefined,
       });
     }
   }, [phase, activeBlock, blockIndex, elapsed]);
@@ -306,7 +363,12 @@ export default function Execute() {
   function handleStart() {
     // Lock the current block so schedule refetches cannot mutate it mid-session.
     lockedBlockRef.current = block;
-    logObservabilityEvent("execution_block_locked", { blockIndex, topicId: block?.topicId });
+    isSyntheticBlockRef.current = false;
+    // Capture schedule version fingerprint so mid-session recalculation can be detected.
+    const versionId = computeScheduleVersionId(blocks);
+    lockedScheduleVersionIdRef.current = versionId;
+    logObservabilityEvent("execution_block_locked", { blockIndex, topicId: block?.topicId, isSynthetic: false });
+    logObservabilityEvent("schedule_version_applied", { versionId, blockIndex });
     clearActiveExecution();
     setPendingResume(null);
     startTimer();
@@ -316,16 +378,28 @@ export default function Execute() {
   function handleResume(persisted: NonNullable<ReturnType<typeof loadActiveExecution>>) {
     // Prefer live block; fall back to a synthetic block built from persisted
     // data if the schedule was recalculated while the user was away.
+    const usingSynthetic = block === null;
     lockedBlockRef.current = block ?? syntheticBlock(
       persisted.topicId,
       persisted.topicName,
       persisted.sessionType,
       persisted.elapsedSeconds,
     );
+    isSyntheticBlockRef.current = usingSynthetic;
+    // Restore the locked version from persisted data if available; otherwise
+    // compute from the current live blocks.
+    lockedScheduleVersionIdRef.current =
+      persisted.scheduleVersionId ?? computeScheduleVersionId(blocks);
     logObservabilityEvent("execution_block_locked", {
       blockIndex,
       topicId: lockedBlockRef.current.topicId,
-      fromPersisted: block === null,
+      fromPersisted: usingSynthetic,
+      isSynthetic: usingSynthetic,
+    });
+    logObservabilityEvent("schedule_version_applied", {
+      versionId: lockedScheduleVersionIdRef.current,
+      blockIndex,
+      fromPersisted: true,
     });
     clearActiveExecution();
     setPendingResume(null);
@@ -340,12 +414,14 @@ export default function Execute() {
   function handleAbandonResume() {
     // Lock before entering post_session so block data is available for save.
     if (!lockedBlockRef.current) {
+      const usingSynthetic = block === null && pendingResume !== null;
       lockedBlockRef.current = block ?? (pendingResume ? syntheticBlock(
         pendingResume.topicId,
         pendingResume.topicName,
         pendingResume.sessionType,
         0,
       ) : null);
+      isSyntheticBlockRef.current = usingSynthetic;
     }
     clearActiveExecution();
     setPendingResume(null);
@@ -373,6 +449,7 @@ export default function Execute() {
         sessionType: activeBlock.sessionType as "lecture" | "practice",
         startedAt: startedAtRef.current,
         elapsedSeconds: elapsed,
+        scheduleVersionId: lockedScheduleVersionIdRef.current ?? undefined,
       });
     }
     setPhase("interrupted");
@@ -434,14 +511,27 @@ export default function Execute() {
             title: notes.trim() || undefined,
           });
 
-          void runFeedbackLoop({
-            topicId: String(activeBlock.topicId),
-            topicName: activeBlock.topicName,
-            serverMastery: activeBlock.masteryScore,
-            focusedMinutes: effectiveMinutes,
-          });
+          // Skip the feedback loop for synthetic blocks — their mastery/priority
+          // scores are zeroed and would corrupt the local knowledge-state model.
+          // Synthetic blocks still map to valid topicIds for the session log.
+          if (!isSyntheticBlockRef.current) {
+            void runFeedbackLoop({
+              topicId: String(activeBlock.topicId),
+              topicName: activeBlock.topicName,
+              serverMastery: activeBlock.masteryScore,
+              focusedMinutes: effectiveMinutes,
+            });
+          }
 
           if (isLastBlock) {
+            // Apply any deferred schedule version and surface the hint.
+            if (pendingScheduleVersionRef.current !== null) {
+              setScheduleUpdatedDuringSession(true);
+              logObservabilityEvent("schedule_version_applied", {
+                newVersion: pendingScheduleVersionRef.current,
+                replacedVersion: lockedScheduleVersionIdRef.current,
+              });
+            }
             setPhase("complete");
           } else {
             const suggestedBreak = computeBreakMinutes(actualMinutes, completedToday, selfRating);
@@ -491,6 +581,10 @@ export default function Execute() {
     navigateToNext();
   }
 
+  // Log once via ref so the execution_schedule_lost event isn't re-emitted
+  // on every render if the page stays in recovery state.
+  const scheduleLostLoggedRef = useRef(false);
+
   // ---------------------------------------------------------------------------
   // Derived values
   // ---------------------------------------------------------------------------
@@ -532,8 +626,6 @@ export default function Execute() {
   // normal flow) or was somehow lost.  Show a recoverable state — never blank.
   // ---------------------------------------------------------------------------
 
-  // Log once via ref so the observability event isn't re-emitted on every render.
-  const scheduleLostLoggedRef = useRef(false);
   if (!activeBlock) {
     if (!scheduleLostLoggedRef.current) {
       scheduleLostLoggedRef.current = true;
@@ -600,6 +692,11 @@ export default function Execute() {
           <div className="rounded-lg border bg-muted/30 px-4 py-3 text-sm text-center">
             {mLabel}
           </div>
+          {scheduleUpdatedDuringSession && (
+            <p className="text-xs text-muted-foreground">
+              Plan updated based on your progress.
+            </p>
+          )}
           <p className="text-sm text-muted-foreground">
             The system will prepare a fresh mission for tomorrow. Open the app then to start.
           </p>
