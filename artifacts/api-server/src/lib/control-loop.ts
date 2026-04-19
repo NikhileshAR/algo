@@ -1,4 +1,4 @@
-import { db, schedulesTable, studentProfileTable, studySessionsTable, topicsTable } from "@workspace/db";
+import { db, schedulesTable, studentProfileTable, studySessionsTable, topicOverridesTable, topicsTable } from "@workspace/db";
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { buildSchedulePlan, type PlannerRiskSignal, type SchedulerMode, type SchedulerTuning } from "./scheduler";
 
@@ -46,6 +46,11 @@ export interface ForecastResult {
   expectedMasteryProgression: ForecastPoint[];
   riskOfFallingBehind: number;
   riskSignal: PlannerRiskSignal;
+  overrideAdjustedProjection?: {
+    completionProbability: number;
+    requiredHoursPerDay: number;
+    coachingMessage: string;
+  };
 }
 
 export interface PerformanceGap {
@@ -314,6 +319,11 @@ export function runForwardForecast(params: {
   topics: TopicRow[];
   daysUntilExam: number;
   tuning: SchedulerTuning;
+  overrideDrift?: {
+    impactLevel: "low" | "medium" | "high";
+    impactScore: number;
+    productiveRate: number;
+  };
 }): ForecastResult {
   const startDate = new Date();
   const horizonDays = Math.max(1, params.daysUntilExam);
@@ -360,7 +370,15 @@ export function runForwardForecast(params: {
   const expectedAverageMastery = expectedMasteryProgression[expectedMasteryProgression.length - 1]?.expectedAverageMastery ?? 0;
   const paceGap = clamp(0.8 - expectedCoverageByExamDate, 0, 1);
   const masteryGap = clamp(0.75 - expectedAverageMastery, 0, 1);
-  const riskOfFallingBehind = clamp(paceGap * 0.65 + masteryGap * 0.35, 0, 1);
+  const driftPenalty = params.overrideDrift
+    ? params.overrideDrift.impactLevel === "high"
+      ? 0.14
+      : params.overrideDrift.impactLevel === "medium"
+        ? 0.08
+        : 0.03
+    : 0;
+  const productiveBuffer = params.overrideDrift ? params.overrideDrift.productiveRate * 0.05 : 0;
+  const riskOfFallingBehind = clamp(paceGap * 0.65 + masteryGap * 0.35 + driftPenalty - productiveBuffer, 0, 1);
   const intervention: PlannerRiskSignal["intervention"] =
     riskOfFallingBehind >= 0.85
       ? "early_reset"
@@ -378,6 +396,18 @@ export function runForwardForecast(params: {
       backlogRisk: Math.round(riskOfFallingBehind * 1000) / 1000,
       fallingBehind: riskOfFallingBehind >= 0.5,
       intervention,
+    },
+    overrideAdjustedProjection: {
+      completionProbability: Math.round((1 - riskOfFallingBehind) * 1000) / 1000,
+      requiredHoursPerDay: Math.round(
+        (params.profile.dailyTargetHours * (1 + driftPenalty * 0.9 - productiveBuffer * 0.6)) * 1000,
+      ) / 1000,
+      coachingMessage:
+        driftPenalty > 0.1
+          ? "A few recent swaps shifted momentum. A tighter sequence tomorrow will keep you on track."
+          : driftPenalty > 0.05
+            ? "You still have flexibility—sticking to one or two anchor sessions tomorrow improves confidence."
+            : "Your flexibility is supporting progress. Keep using intentional swaps when needed.",
     },
   };
 }
@@ -631,11 +661,28 @@ export async function getCurrentControlSnapshot(): Promise<{
   const gap = await computePerformanceGap(14);
   const calibration = calibrateParameters({ profile, gap });
   const normalizedDaysLeft = Math.max(1, Math.ceil((new Date(profile.examDate).getTime() - Date.now()) / MS_PER_DAY));
+  const overridesSince = new Date(Date.now() - 14 * MS_PER_DAY);
+  const recentOverrides = await db
+    .select()
+    .from(topicOverridesTable)
+    .where(gte(topicOverridesTable.createdAt, overridesSince))
+    .orderBy(desc(topicOverridesTable.createdAt));
+  const overrideImpact = recentOverrides.reduce((sum, row) => sum + (row.impactScore ?? 0), 0);
+  const productiveRate = recentOverrides.length > 0
+    ? recentOverrides.filter((row) => row.overrideIntent === "productive_override").length / recentOverrides.length
+    : 0;
+  const impactLevel: "low" | "medium" | "high" =
+    overrideImpact >= 5 ? "high" : overrideImpact >= 2.5 ? "medium" : "low";
   const forecast = runForwardForecast({
     profile,
     topics,
     daysUntilExam: normalizedDaysLeft,
     tuning: calibration.tuning,
+    overrideDrift: {
+      impactLevel,
+      impactScore: Math.round(overrideImpact * 1000) / 1000,
+      productiveRate: Math.round(productiveRate * 1000) / 1000,
+    },
   });
 
   return { forecast, performanceGap: gap, calibration };

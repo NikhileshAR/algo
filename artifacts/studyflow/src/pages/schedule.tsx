@@ -86,6 +86,30 @@ const SWAP_SOFT_LIMIT = 2;
 interface ScheduleOverrideBudget {
   used: number;
   softLimit: number;
+  effectiveUsed?: number;
+  autonomyCredit?: number;
+  frictionStage?: "free" | "warning" | "confirm" | "nudge_stop";
+  requiresConfirmation?: boolean;
+  impactScore?: number;
+  impactLabel?: "LOW" | "MEDIUM" | "HIGH";
+  delayedHighPriorityTopics?: number;
+  productiveOverrides?: number;
+  avoidanceOverrides?: number;
+}
+
+interface PlanIntegritySnapshot {
+  score: number;
+  label: "LOW" | "MEDIUM" | "HIGH";
+  guidance: "more_structure" | "balanced" | "more_flexibility";
+}
+
+interface ResistanceSignal {
+  topicId: number;
+  topicName: string;
+  skipCount: number;
+  suggestedEntryMinutes: number;
+  forceIncludeWithinDays: number;
+  reframingLabel: string;
 }
 
 interface SwapApiResponse {
@@ -99,8 +123,19 @@ interface SwapApiResponse {
     masteryScore: number;
   }>;
   overrideBudget?: ScheduleOverrideBudget;
+  planIntegrity?: PlanIntegritySnapshot;
+  resistanceSignals?: ResistanceSignal[];
+  overrideImpact?: {
+    score: number;
+    label: "LOW" | "MEDIUM" | "HIGH";
+    delayedHighPriorityTopics: number;
+  };
   swap?: {
     wasRecommended?: boolean;
+    overrideId?: number;
+    intent?: "productive_override" | "avoidance_override" | "neutral_override";
+    impactLabel?: "LOW" | "MEDIUM" | "HIGH";
+    recommendedTopicIds?: number[];
   };
 }
 
@@ -110,30 +145,44 @@ interface SwapOption {
   subject: string;
   difficultyLevel: number;
   priorityScore: number;
+  masteryScore: number;
+  lastStudiedAt: string | null;
 }
 
-function scoreSwapOption(target: SwapOption, candidate: SwapOption): number {
-  const sameSubjectBonus = candidate.subject === target.subject ? 1 : 0;
-  const priorityDistance = Math.abs((candidate.priorityScore ?? 0) - (target.priorityScore ?? 0));
-  const difficultyDistance = Math.abs((candidate.difficultyLevel ?? 3) - (target.difficultyLevel ?? 3));
-  return sameSubjectBonus * 2 - priorityDistance * 1.2 - difficultyDistance * 0.35;
+function hoursSince(studiedAt?: string | null): number {
+  if (!studiedAt) return 9999;
+  return (Date.now() - new Date(studiedAt).getTime()) / (1000 * 60 * 60);
+}
+
+function scoreSwapOption(target: SwapOption, candidate: SwapOption, blockIndex: number): number {
+  const sameSubjectContinuity = candidate.subject === target.subject ? 1 : 0;
+  const weakAreaPriority = clamp(1 - (candidate.masteryScore ?? 0), 0, 1);
+  const prioritySimilarity = 1 - clamp(Math.abs((candidate.priorityScore ?? 0) - (target.priorityScore ?? 0)), 0, 1);
+  const fatigueCompatibility = blockIndex >= 2
+    ? 1 - clamp((candidate.difficultyLevel ?? 3) / 5, 0, 1)
+    : clamp((candidate.difficultyLevel ?? 3) / 5, 0, 1);
+  const spacing = hoursSince(candidate.lastStudiedAt);
+  const spacingBonus = spacing < 12 ? 0 : spacing <= 96 ? 1 : 0.55;
+  return sameSubjectContinuity * 0.32 +
+    weakAreaPriority * 0.22 +
+    prioritySimilarity * 0.2 +
+    fatigueCompatibility * 0.14 +
+    spacingBonus * 0.12;
 }
 
 function buildRecommendedSwapIds(
   current: SwapOption,
   allTopics: SwapOption[],
+  blockIndex: number,
 ): number[] {
   const ranked = allTopics
     .filter((topic) => topic.id !== current.id)
     .map((topic) => ({
       id: topic.id,
-      score: scoreSwapOption(current, topic),
-      sameSubject: topic.subject === current.subject,
+      score: scoreSwapOption(current, topic, blockIndex),
     }))
     .sort((a, b) => b.score - a.score);
-  const preferred = ranked.filter((item) => item.sameSubject);
-  const fallback = ranked.filter((item) => !item.sameSubject);
-  return [...preferred, ...fallback].slice(0, 5).map((item) => item.id);
+  return ranked.slice(0, 5).map((item) => item.id);
 }
 
 function getFocusSignal(daysUntilExam?: number): string {
@@ -205,6 +254,8 @@ export default function Schedule() {
   const [swapTopicId, setSwapTopicId] = useState<number | null>(null);
   const [showFullSwapList, setShowFullSwapList] = useState(false);
   const [needsExtraSwapConfirm, setNeedsExtraSwapConfirm] = useState(false);
+  const [pendingReflection, setPendingReflection] = useState<number | null>(null);
+  const [reflectionPending, setReflectionPending] = useState(false);
 
   const [activeTimer, setActiveTimer] = useState<ActiveTimer | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -305,9 +356,7 @@ export default function Schedule() {
 
   async function applySwap() {
     if (swapBlockIndex === null || swapTopicId === null || swapPending) return;
-    const used = overrideBudget.used ?? 0;
-    const softLimit = overrideBudget.softLimit ?? SWAP_SOFT_LIMIT;
-    if (used >= softLimit && !needsExtraSwapConfirm) {
+    if (overrideBudget.requiresConfirmation && !needsExtraSwapConfirm) {
       setNeedsExtraSwapConfirm(true);
       return;
     }
@@ -317,8 +366,21 @@ export default function Schedule() {
       const response = await fetch("/api/schedule/today/swap", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ blockIndex: swapBlockIndex, chosenTopicId: swapTopicId }),
+        body: JSON.stringify({
+          blockIndex: swapBlockIndex,
+          chosenTopicId: swapTopicId,
+          confirmed: needsExtraSwapConfirm,
+        }),
       });
+      if (response.status === 409) {
+        const conflict = (await response.json()) as SwapApiResponse;
+        queryClient.setQueryData(getGetTodayScheduleQueryKey(), (previous: unknown) => ({
+          ...(typeof previous === "object" && previous ? previous : {}),
+          ...(conflict ?? {}),
+        }));
+        setNeedsExtraSwapConfirm(true);
+        return;
+      }
       if (!response.ok) {
         throw new Error("Swap failed");
       }
@@ -333,16 +395,36 @@ export default function Schedule() {
       setSwapTopicId(null);
       setNeedsExtraSwapConfirm(false);
       const isRecommended = updated.swap?.wasRecommended ?? selectedSwapIsRecommended;
+      if (typeof updated.swap?.overrideId === "number") {
+        setPendingReflection(updated.swap.overrideId);
+      }
       toast({
         title: "Session swapped",
-        description: isRecommended
-          ? "Schedule updated with a recommended alternative."
-          : "Schedule updated. This swap is lower priority and may affect progress.",
+        description: updated.swap?.intent === "productive_override"
+          ? "Great choice—this deviation supports your trajectory."
+          : isRecommended
+            ? "Schedule updated with a recommended alternative."
+            : `Schedule updated. Deviation impact: ${updated.swap?.impactLabel ?? "MEDIUM"}.`,
       });
     } catch {
       toast({ title: "Error", description: "Could not swap this block right now.", variant: "destructive" });
     } finally {
       setSwapPending(false);
+    }
+  }
+
+  async function submitReflection(outcome: "yes" | "neutral" | "no") {
+    if (!pendingReflection || reflectionPending) return;
+    setReflectionPending(true);
+    try {
+      await fetch("/api/schedule/overrides/reflection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overrideId: pendingReflection, outcome }),
+      });
+      setPendingReflection(null);
+    } finally {
+      setReflectionPending(false);
     }
   }
 
@@ -413,9 +495,11 @@ export default function Schedule() {
     subject: topic.subject,
     difficultyLevel: topic.difficultyLevel,
     priorityScore: topic.priorityScore,
+    masteryScore: topic.masteryScore,
+    lastStudiedAt: topic.lastStudiedAt ?? null,
   })), [topics]);
   const recommendedSwapIds = useMemo(() => {
-    if (!swapTargetBlock) return [];
+    if (!swapTargetBlock || swapBlockIndex === null) return [];
     return buildRecommendedSwapIds(
       {
         id: swapTargetBlock.topicId,
@@ -423,15 +507,18 @@ export default function Schedule() {
         subject: swapTargetBlock.subject,
         difficultyLevel: topicMap.get(swapTargetBlock.topicId)?.difficultyLevel ?? 3,
         priorityScore: swapTargetBlock.priorityScore ?? 0,
+        masteryScore: topicMap.get(swapTargetBlock.topicId)?.masteryScore ?? swapTargetBlock.masteryScore ?? 0,
+        lastStudiedAt: topicMap.get(swapTargetBlock.topicId)?.lastStudiedAt ?? null,
       },
       allSwapTopics.filter((topic) => topic.id !== swapTargetBlock.topicId),
+      swapBlockIndex,
     );
-  }, [swapTargetBlock, allSwapTopics, topicMap]);
+  }, [swapTargetBlock, allSwapTopics, topicMap, swapBlockIndex]);
   const recommendedSwapTopics = useMemo(() => {
     const map = new Map(allSwapTopics.map((topic) => [topic.id, topic]));
     return recommendedSwapIds
       .map((id) => map.get(id))
-      .filter((topic): topic is SwapOption => Boolean(topic));
+      .filter(Boolean) as SwapOption[];
   }, [recommendedSwapIds, allSwapTopics]);
   const fullSwapTopics = useMemo(() => {
     if (!swapTargetBlock) return [];
@@ -441,6 +528,9 @@ export default function Schedule() {
   }, [allSwapTopics, swapTargetBlock]);
   const selectedSwapIsRecommended = swapTopicId !== null && recommendedSwapIds.includes(swapTopicId);
   const showPriorityWarning = swapTopicId !== null && !selectedSwapIsRecommended;
+  const planIntegrity = (schedule as { planIntegrity?: PlanIntegritySnapshot } | undefined)?.planIntegrity;
+  const overrideImpact = (schedule as { overrideImpact?: { score: number; label: "LOW" | "MEDIUM" | "HIGH"; delayedHighPriorityTopics: number } } | undefined)?.overrideImpact;
+  const resistanceSignals = ((schedule as { resistanceSignals?: ResistanceSignal[] } | undefined)?.resistanceSignals) ?? [];
   const scheduleHours = typeof schedule?.scheduledHours === "number" ? schedule.scheduledHours : 0;
   const focusSignal = getFocusSignal(typeof schedule?.daysUntilExam === "number" ? schedule.daysUntilExam : undefined);
   const hasSchedule = Boolean(schedule);
@@ -520,6 +610,17 @@ export default function Schedule() {
           <p className="text-xs text-muted-foreground mt-1">
             Flex swaps today: {overrideBudget.used}/{overrideBudget.softLimit}
           </p>
+          {overrideImpact && (
+            <p className="text-xs text-muted-foreground mt-1">
+              Today’s deviation impact: <span className="font-medium">{overrideImpact.label}</span>
+              {overrideImpact.delayedHighPriorityTopics > 0 ? ` · Delayed ${overrideImpact.delayedHighPriorityTopics} high-priority topic(s)` : ""}
+            </p>
+          )}
+          {planIntegrity && (
+            <p className="text-xs text-muted-foreground mt-1">
+              Plan integrity: {Math.round(planIntegrity.score * 100)}% ({planIntegrity.label})
+            </p>
+          )}
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => openLog()} data-testid="button-log-session">
@@ -546,6 +647,31 @@ export default function Schedule() {
             <span className="font-mono text-xl font-bold text-primary tabular-nums">{formatElapsed(elapsed)}</span>
           </div>
         </div>
+      )}
+
+      {pendingReflection && (
+        <Card className="border-primary/25">
+          <CardContent className="py-3 space-y-2">
+            <p className="text-sm font-medium">Was this a better choice?</p>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" disabled={reflectionPending} onClick={() => void submitReflection("yes")}>Yes</Button>
+              <Button size="sm" variant="outline" disabled={reflectionPending} onClick={() => void submitReflection("neutral")}>Neutral</Button>
+              <Button size="sm" variant="outline" disabled={reflectionPending} onClick={() => void submitReflection("no")}>No</Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {resistanceSignals.length > 0 && (
+        <Card className="border-amber-300/60 bg-amber-50/50">
+          <CardContent className="py-3 space-y-1">
+            {resistanceSignals.slice(0, 2).map((signal) => (
+              <p key={`resistance-${signal.topicId}`} className="text-xs text-amber-900">
+                {signal.topicName}: skipped {signal.skipCount} times. {signal.reframingLabel}
+              </p>
+            ))}
+          </CardContent>
+        </Card>
       )}
 
       {isLoadingSchedule && !scheduleTimedOut ? (
@@ -851,14 +977,24 @@ export default function Schedule() {
                   <span>This is lower priority and may affect your progress.</span>
                 </div>
               )}
-              {overrideBudget.used >= overrideBudget.softLimit && (
+              {overrideBudget.frictionStage === "warning" && (
                 <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
-                  You are beyond today’s swap budget. This will require confirmation.
+                  Second swap today—keep this intentional so trajectory stays stable.
+                </div>
+              )}
+              {overrideBudget.frictionStage === "confirm" && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
+                  Third swap today—confirmation required.
+                </div>
+              )}
+              {overrideBudget.frictionStage === "nudge_stop" && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
+                  Multiple swaps detected. Consider stopping planning and finishing any one block first.
                 </div>
               )}
               {needsExtraSwapConfirm && (
                 <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
-                  Confirm this extra swap to continue.
+                  Confirm this swap to continue.
                 </div>
               )}
               <Button
@@ -870,7 +1006,9 @@ export default function Schedule() {
                   ? "Applying swap..."
                   : needsExtraSwapConfirm
                     ? "Confirm and swap"
-                    : "Swap topic"}
+                    : overrideBudget.frictionStage === "nudge_stop"
+                      ? "Swap anyway"
+                      : "Swap topic"}
               </Button>
             </div>
           ) : (
