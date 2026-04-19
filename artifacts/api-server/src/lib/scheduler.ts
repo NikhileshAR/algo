@@ -23,12 +23,18 @@ function parseDeps(prerequisites: string): number[] {
 
 const MIN_DECAY_STABILITY = 0.1;
 const TOTAL_PREPARATION_HORIZON_DAYS = 730;
-/** Recency suppression: topics studied within this window receive a reduced priority. */
+/** Recency suppression window: topics studied within this many hours are suppressed. */
 const RECENT_STUDY_SUPPRESSION_HOURS = 48;
-/** Floor multiplier applied to recently-studied topics (prevents total suppression). */
-const RECENT_STUDY_SUPPRESSION_FLOOR = 0.6;
-/** If no 11th-class topic has been studied in this many days, inject a guaranteed block. */
-const MIN_11TH_STUDY_INTERVAL_DAYS = 7;
+/** Strongest suppression floor applied at 0 h (very recently studied). */
+const RECENT_STUDY_SUPPRESSION_FLOOR = 0.35;
+/** Maximum bridge blocks allowed per day to prevent over-bridging. */
+const MAX_BRIDGE_BLOCKS_PER_DAY = 3;
+/**
+ * Class-11 soft priority boost: max multiplier applied when no 11th topic
+ * has been studied in this many days (smooth ramp up to this threshold).
+ */
+const ELEVENTH_EXPOSURE_BOOST_MAX = 1.6;
+const ELEVENTH_EXPOSURE_BOOST_DAYS = 7;
 
 type AcademicClass = 11 | 12 | "unknown";
 type PreparationPhase = "foundation" | "transition" | "consolidation";
@@ -163,6 +169,15 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+/**
+ * Ken Perlin's smoothstep: returns 0 at x≤edge0, 1 at x≥edge1, smooth cubic in between.
+ * Works for both ascending (edge0 < edge1) and descending (edge0 > edge1) mappings.
+ */
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
 function classifyTopicClass(topic: TopicRow): AcademicClass {
   const text = `${topic.name} ${topic.subject}`.toLowerCase();
   const class11Pattern = /\b(11|11th|xi|class\s*11|grade\s*11|std\s*11)\b/;
@@ -177,15 +192,14 @@ function inferPreparationPhase(daysUntilExam: number, engagement?: PhaseEngageme
   const elapsedDays = clamp(TOTAL_PREPARATION_HORIZON_DAYS - daysRemaining, 0, TOTAL_PREPARATION_HORIZON_DAYS);
   let journeyCompletedRatio = elapsedDays / TOTAL_PREPARATION_HORIZON_DAYS;
 
-  // Hybrid adjustment: if significant 12th-class engagement has already begun,
-  // nudge the journey ratio forward so phase reflects actual preparation stage.
+  // Hybrid adjustment: if 12th-class engagement has started, nudge the journey
+  // ratio forward so phase reflects actual preparation stage.
+  // Uses a smooth S-curve over the full [0, 1] engagement range — no threshold jump.
   if (engagement && engagement.totalStudiedCount >= 3 && engagement.twelfthTopicCount > 0) {
     const twelfthEngagementRatio = engagement.twelfthStudiedCount / engagement.twelfthTopicCount;
-    // Nudge linearly up to +0.15 once >30% of 12th topics are started.
-    if (twelfthEngagementRatio >= 0.3) {
-      const nudge = clamp((twelfthEngagementRatio - 0.3) / 0.7, 0, 1) * 0.15;
-      journeyCompletedRatio = clamp(journeyCompletedRatio + nudge, 0, 1);
-    }
+    // smoothstep(0, 1, ratio) starts near 0 for very low engagement and reaches 1 at full engagement.
+    const nudge = 0.15 * smoothstep(0, 1, twelfthEngagementRatio);
+    journeyCompletedRatio = clamp(journeyCompletedRatio + nudge, 0, 1);
   }
 
   if (journeyCompletedRatio >= 0.72 || daysRemaining <= 210) {
@@ -210,8 +224,11 @@ function computeTemporalWeight(params: {
   }
   if (params.topicClass === 11) {
     let weight = 1 - 0.6 * latePressure;
-    const lowMasteryException = params.masteryScore < 0.4 ? 0.35 : 0;
-    const decayException = params.retention < 0.45 ? 0.2 : 0;
+    // Smooth transitions: use smoothstep to avoid abrupt jumps at fixed mastery/retention thresholds.
+    // lowMasteryException: peaks at 0.35 for mastery=0, fades smoothly to 0 at mastery=0.55.
+    const lowMasteryException = 0.35 * smoothstep(0.55, 0, params.masteryScore);
+    // decayException: peaks at 0.20 for retention=0, fades smoothly to 0 at retention=0.60.
+    const decayException = 0.20 * smoothstep(0.60, 0, params.retention);
     const prerequisiteException = params.unlocksTwelfthTopics > 0 ? Math.min(0.25, params.unlocksTwelfthTopics * 0.08) : 0;
     weight += lowMasteryException + decayException + prerequisiteException;
     return clamp(weight, 0.3, 1.15);
@@ -244,6 +261,22 @@ function computeBridgeMinutes(prereq: TopicRow): number {
   const raw = 5 + 25 * masteryPenalty * (0.6 + 0.4 * difficultyFactor);
   // Round to nearest 5m, clamp to [5, 30]
   return Math.round(clamp(raw, 5, 30) / 5) * 5;
+}
+
+/**
+ * Smooth time-decayed recency multiplier for priority suppression.
+ *   0 – 6 h  : strong suppression  (multiplier near FLOOR = 0.35)
+ *   6 – 24 h : moderate            (ramps from ~0.38 toward ~0.68)
+ *   24 – 48 h: light               (ramps from ~0.68 toward 1.0)
+ * Uses a cubic smoothstep so there are no step discontinuities.
+ * Returns 1.0 when suppression should be bypassed (retention risk or beyond window).
+ */
+function computeRecencyMultiplier(hoursStudied: number, needsSpacedRepetition: boolean): number {
+  if (needsSpacedRepetition || hoursStudied >= RECENT_STUDY_SUPPRESSION_HOURS) return 1;
+  const t = clamp(hoursStudied / RECENT_STUDY_SUPPRESSION_HOURS, 0, 1);
+  // Cubic ease-in (smoothstep): slow recovery early, faster at end.
+  const recovery = t * t * (3 - 2 * t);
+  return clamp(RECENT_STUDY_SUPPRESSION_FLOOR + (1 - RECENT_STUDY_SUPPRESSION_FLOOR) * recovery, RECENT_STUDY_SUPPRESSION_FLOOR, 1);
 }
 
 function computeMasteryVariance(masteryValues: number[]): { variance: number; allZero: boolean } {
@@ -296,6 +329,7 @@ function computePriorityBreakdown(
   graph: Map<number, number[]>,
   topicClasses: Map<number, AcademicClass>,
   phaseState: PreparationPhaseState,
+  eleventhExposureBoost: number,
 ): PriorityBreakdown {
   const daysDormant = daysSinceStudied(topic.lastStudiedAt);
   const retention = forgettingRetention(topic.masteryScore, daysDormant, tuning.decayConstant);
@@ -333,15 +367,11 @@ function computePriorityBreakdown(
   // unless they are at risk of forgetting (spaced-repetition window).
   const hoursStudied = hoursSinceStudied(topic.lastStudiedAt);
   const needsSpacedRepetition = retention < 0.45;
-  const recencyMultiplier =
-    !needsSpacedRepetition && hoursStudied < RECENT_STUDY_SUPPRESSION_HOURS
-      ? clamp(
-          RECENT_STUDY_SUPPRESSION_FLOOR +
-            (1 - RECENT_STUDY_SUPPRESSION_FLOOR) * (hoursStudied / RECENT_STUDY_SUPPRESSION_HOURS),
-          RECENT_STUDY_SUPPRESSION_FLOOR,
-          1,
-        )
-      : 1;
+  const recencyMultiplier = computeRecencyMultiplier(hoursStudied, needsSpacedRepetition);
+
+  // Proactive 11th maintenance: soft boost for class-11 topics when recent exposure is sparse.
+  const topicClassForBoost = topicClasses.get(topic.id) ?? "unknown";
+  const exposureBoost = topicClassForBoost === 11 ? eleventhExposureBoost : 1;
 
   const total = (
     weightage * 0.3 +
@@ -349,7 +379,7 @@ function computePriorityBreakdown(
     lowMastery * 0.35 +
     dependencyPressure * 0.1 +
     decayPressure * 0.05
-  ) * disciplineMod * temporalWeight * recencyMultiplier;
+  ) * disciplineMod * temporalWeight * recencyMultiplier * exposureBoost;
 
   return {
     priority: total,
@@ -515,6 +545,17 @@ export function buildSchedulePlan(params: {
   const riskSignal = scoreBacklogRisk(profile, days, openTopics.length);
   const selectedIntervention = params.forceIntervention ?? riskSignal.intervention;
 
+  // Proactive 11th maintenance: compute a smooth priority boost that rises as class-11
+  // exposure becomes sparse (measured by days since the most recently studied 11th topic).
+  // Uses smoothstep from 1.0 (studied within last ~1 day) to ELEVENTH_EXPOSURE_BOOST_MAX
+  // (not studied in ELEVENTH_EXPOSURE_BOOST_DAYS days). Avoids forced injection.
+  const class11Topics = topics.filter((t) => topicClassesEarly.get(t.id) === 11);
+  const daysSinceLast11thStudy = class11Topics.length > 0
+    ? Math.min(...class11Topics.map((t) => daysSinceStudied(t.lastStudiedAt)))
+    : ELEVENTH_EXPOSURE_BOOST_DAYS;
+  const eleventhExposureBoost = 1 + (ELEVENTH_EXPOSURE_BOOST_MAX - 1) *
+    smoothstep(1, ELEVENTH_EXPOSURE_BOOST_DAYS, daysSinceLast11thStudy);
+
   const baseHours = geometricCapacity(profile.capacityScore, profile.disciplineScore) * tuning.growthRateMultiplier;
   let scheduledHours = Math.max(0, baseHours);
   let isReset = false;
@@ -548,7 +589,7 @@ export function buildSchedulePlan(params: {
       incompleteDeps.some((depId) => topicClasses.get(depId) === 11);
     const allDepsComplete = incompleteDeps.length === 0;
 
-    const adaptive = computePriorityBreakdown(topic, profile, days, tuning, graph, topicClasses, phaseState);
+    const adaptive = computePriorityBreakdown(topic, profile, days, tuning, graph, topicClasses, phaseState, eleventhExposureBoost);
     const randomPriority = deterministicHash(`${params.dateSeed}:${topic.id}`);
     const staticRank = staticOrderIndex.get(topic.id);
     const staticPriority = staticRank !== undefined
@@ -585,6 +626,7 @@ export function buildSchedulePlan(params: {
   let usedMinutes = 0;
   let twelfthMinutes = 0;
   const bridgedTopicIds = new Set<number>();
+  let bridgeBlockCount = 0;
 
   const pickBridgePrerequisite = (row: typeof ranked[number]): TopicRow | null => {
     if (row.topicClass !== 12 || row.deps.length === 0) return null;
@@ -607,7 +649,9 @@ export function buildSchedulePlan(params: {
 
     const remainingBefore = totalMinutes - usedMinutes;
     const bridgePrerequisite = pickBridgePrerequisite(row);
-    if (bridgePrerequisite) {
+    // Bridge injection control: cap total bridge blocks and avoid consecutive bridges.
+    const lastBlockIsBridge = blocks.length > 0 && blocks[blocks.length - 1]!.topicName.endsWith("(Bridge revision)");
+    if (bridgePrerequisite && bridgeBlockCount < MAX_BRIDGE_BLOCKS_PER_DAY && !lastBlockIsBridge) {
       const bridgeMinutes = computeBridgeMinutes(bridgePrerequisite);
       if (remainingBefore >= bridgeMinutes + 15) {
         blocks.push({
@@ -622,6 +666,7 @@ export function buildSchedulePlan(params: {
         });
         usedMinutes += bridgeMinutes;
         bridgedTopicIds.add(bridgePrerequisite.id);
+        bridgeBlockCount++;
       }
     }
 
@@ -684,46 +729,27 @@ export function buildSchedulePlan(params: {
     }
   }
 
-  // ── Minimum 11th maintenance guarantee ──────────────────────────────────────
-  // If no class-11 main block was added today AND every class-11 topic was last
-  // studied more than MIN_11TH_STUDY_INTERVAL_DAYS ago, inject a short revision
-  // block for the highest-priority eligible 11th topic.
-  const eleventhMainBlockCount = blocks.filter(
-    (b) => topicClasses.get(b.topicId) === 11 && !bridgedTopicIds.has(b.topicId),
-  ).length;
-
-  if (eleventhMainBlockCount === 0) {
-    const class11Topics = topics.filter((t) => topicClasses.get(t.id) === 11);
-    const mostRecentEleventhStudy = class11Topics.length > 0
-      ? Math.min(...class11Topics.map((t) => daysSinceStudied(t.lastStudiedAt)))
-      : 999;
-
-    if (mostRecentEleventhStudy >= MIN_11TH_STUDY_INTERVAL_DAYS) {
-      // Pick the highest-priority eligible 11th candidate not already in blocks.
-      const injectionCandidate = ranked.find(
-        (r) =>
-          r.topicClass === 11 &&
-          !blocks.some((b) => b.topicId === r.topic.id),
-      );
-      if (injectionCandidate) {
-        const remaining = totalMinutes - usedMinutes;
-        const injectMinutes = Math.min(20, Math.max(15, remaining));
-        if (injectMinutes >= 15) {
-          blocks.push({
-            topicId: injectionCandidate.topic.id,
-            topicName: injectionCandidate.topic.name,
-            subject: injectionCandidate.topic.subject,
-            sessionType: "lecture",
-            durationMinutes: injectMinutes,
-            priorityScore: Math.round(injectionCandidate.priority * 1000) / 1000,
-            masteryScore: injectionCandidate.topic.masteryScore,
-            explanation: injectionCandidate.explainability,
-          });
-          usedMinutes += injectMinutes;
-        }
-      }
-    }
-  }
+  // ── Intra-Day Energy-Aware Ordering ─────────────────────────────────────────
+  // Reorder finalized blocks so cognitively demanding work lands early
+  // (while mental energy is high) and lighter revision/bridge blocks come later.
+  // Block selection is unchanged; only presentation order is affected.
+  //
+  // slotOrder: 0 = earliest, higher = later in the day.
+  //   Hard + low mastery  → slotOrder near 0  (prime morning slot)
+  //   Medium              → slotOrder ~0.5
+  //   Bridge / revision   → slotOrder ~1      (end-of-day)
+  blocks.sort((a, b) => {
+    const isBridgeA = a.topicName.endsWith("(Bridge revision)") ? 1 : 0;
+    const isBridgeB = b.topicName.endsWith("(Bridge revision)") ? 1 : 0;
+    // energy demand: high when difficulty is high and mastery is low.
+    const difficulty = (block: ScheduleBlock) =>
+      topicClasses.get(block.topicId) === 11 ? 0.4 : 0.6; // 12th assumed harder on average
+    const energyA = isBridgeA ? 0 : (1 - a.masteryScore) * difficulty(a);
+    const energyB = isBridgeB ? 0 : (1 - b.masteryScore) * difficulty(b);
+    // Sort descending by energy demand (high energy first), bridges last.
+    if (isBridgeA !== isBridgeB) return isBridgeA - isBridgeB;
+    return energyB - energyA;
+  });
 
   return {
     date: params.dateSeed,
@@ -839,6 +865,13 @@ export async function recomputePriorities(): Promise<void> {
     capacitySmoothing: 0.8,
     growthRateMultiplier: 1,
   };
+  const class11Topics = topics.filter((t) => topicClasses.get(t.id) === 11);
+  const daysSinceLast11thStudy = class11Topics.length > 0
+    ? Math.min(...class11Topics.map((t) => daysSinceStudied(t.lastStudiedAt)))
+    : ELEVENTH_EXPOSURE_BOOST_DAYS;
+  const eleventhExposureBoost = 1 + (ELEVENTH_EXPOSURE_BOOST_MAX - 1) *
+    smoothstep(1, ELEVENTH_EXPOSURE_BOOST_DAYS, daysSinceLast11thStudy);
+
   for (const topic of topics) {
     const { priority } = computePriorityBreakdown(
       topic,
@@ -848,6 +881,7 @@ export async function recomputePriorities(): Promise<void> {
       graph,
       topicClasses,
       phaseState,
+      eleventhExposureBoost,
     );
     await db
       .update(topicsTable)
