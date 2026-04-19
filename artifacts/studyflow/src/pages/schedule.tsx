@@ -7,10 +7,6 @@ import {
   useListSessions,
   useListTopics,
   getGetTodayScheduleQueryKey,
-  getListSessionsQueryKey,
-  getGetDashboardSummaryQueryKey,
-  getGetPriorityTopicsQueryKey,
-  getListTopicsQueryKey,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -45,6 +41,9 @@ import { RefreshCw, Clock, CheckCircle2, BookOpen, Target, Info, Play, Square } 
 import { recordManualTelemetryEvent, syncSchedulerTelemetryInput } from "@/lib/local-db/bridge";
 import { runFeedbackLoop } from "@/lib/feedback-loop";
 import { useLocalHydration } from "@/hooks/use-local-hydration";
+import { useBoundedLoading } from "@/hooks/use-bounded-loading";
+import { logObservabilityEvent } from "@/lib/observability";
+import { invalidateAfterRecalculate, invalidateAfterSessionLog } from "@/lib/query-invalidation";
 
 const logSessionSchema = z.object({
   topicId: z.coerce.number().min(1, "Select a topic"),
@@ -149,6 +148,11 @@ export default function Schedule() {
   const { data: sessions } = useListSessions({ limit: 200 });
   const recalculate = useRecalculateSchedule();
   const logSession = useLogSession();
+  const isLoadingSchedule = !isHydrated || isLoading;
+  const { timedOut: scheduleTimedOut, resetTimeout: resetScheduleTimeout } = useBoundedLoading(
+    "schedule-page",
+    isLoadingSchedule,
+  );
 
   const form = useForm<z.infer<typeof logSessionSchema>>({
     resolver: zodResolver(logSessionSchema),
@@ -156,6 +160,12 @@ export default function Schedule() {
   });
 
   const sessionType = form.watch("sessionType");
+
+  useEffect(() => {
+    if (scheduleTimedOut) {
+      logObservabilityEvent("fallback_triggered", { scope: "schedule-page", reason: "timeout" });
+    }
+  }, [scheduleTimedOut]);
 
   useEffect(() => {
     return () => {
@@ -204,8 +214,7 @@ export default function Schedule() {
     void syncSchedulerTelemetryInput(today).finally(() => {
       recalculate.mutate(undefined, {
         onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() });
-          queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
+          invalidateAfterRecalculate(queryClient);
           toast({ title: "Schedule recalculated", description: "Your plan has been updated based on your telemetry + current state." });
         },
       });
@@ -242,11 +251,7 @@ export default function Schedule() {
           toast({ title: `Session logged · ${topicName}`, description });
           setLogOpen(false);
           form.reset();
-          queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() });
-          queryClient.invalidateQueries({ queryKey: getListSessionsQueryKey() });
-          queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
-          queryClient.invalidateQueries({ queryKey: getGetPriorityTopicsQueryKey() });
-          queryClient.invalidateQueries({ queryKey: getListTopicsQueryKey() });
+          invalidateAfterSessionLog(queryClient);
           if (topicName) {
             void recordManualTelemetryEvent({
               topic: topicName,
@@ -374,8 +379,24 @@ export default function Schedule() {
         </div>
       )}
 
-      {!isHydrated || isLoading ? (
+      {isLoadingSchedule && !scheduleTimedOut ? (
         <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-24" />)}</div>
+      ) : scheduleTimedOut ? (
+        <Card>
+          <CardContent className="py-6 space-y-3">
+            <p className="text-sm text-muted-foreground">Schedule loading timed out. You can retry or use manual recovery mode.</p>
+            <Button
+              variant="outline"
+              onClick={() => {
+                logObservabilityEvent("retry_requested", { scope: "schedule-page" });
+                resetScheduleTimeout();
+                queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() });
+              }}
+            >
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
       ) : hydrationError || scheduleError ? (
         <Card>
           <CardContent className="py-6 space-y-3">

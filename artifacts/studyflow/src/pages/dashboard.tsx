@@ -17,6 +17,8 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ArrowRight, Clock3, CircleCheck, PlayCircle, AlertTriangle, RefreshCw, Sparkles } from "lucide-react";
 import { useLocalHydration } from "@/hooks/use-local-hydration";
+import { useBoundedLoading } from "@/hooks/use-bounded-loading";
+import { logObservabilityEvent } from "@/lib/observability";
 
 type RiskSignal = {
   backlogRisk: number;
@@ -39,10 +41,29 @@ type ExtendedSchedule = DailySchedule & {
   control?: ControlSnapshot;
 };
 
+type MissionFallbackBlock = {
+  isFallback: true;
+  topicId: number;
+  topicName: string;
+  durationMinutes: number;
+  sessionType: "lecture" | "practice";
+};
+
+type RenderMissionBlock =
+  | { block: BlockWithExplanation; index: number; status: "done" | "continue" | "now" | "next"; isFallback: false }
+  | { block: MissionFallbackBlock; index: number; status: "next"; isFallback: true };
+
 const EXPLANATION_DISPLAY_THRESHOLD = 0.5;
 const STRONG_MOMENTUM_MINUTES = 90;
 const ALMOST_THERE_MINUTES = 60;
 const MIN_CATCHUP_HOURS = 0.5;
+const MISSION_RETRY_LIMIT = 1;
+const COLD_START_SESSION_THRESHOLD = 5;
+const COLD_START_MASTERY_THRESHOLD = 0.1;
+const FALLBACK_LECTURE_MASTERY_THRESHOLD = 0.2;
+const FALLBACK_PRIMARY_DURATION_MINUTES = 30;
+const FALLBACK_SECONDARY_DURATION_MINUTES = 20;
+const MEDIUM_CONFIDENCE_SESSION_THRESHOLD = 14;
 
 type BlockWithExplanation = DailySchedule["blocks"][number] & {
   explanation?: {
@@ -112,6 +133,8 @@ export default function Dashboard() {
   const queryClient = useQueryClient();
   const recalculate = useRecalculateSchedule();
   const attemptedAutoRecalcRef = useRef(false);
+  // Track whether a fallback mission was shown so we can log reconciliation.
+  const fallbackWasShownRef = useRef(false);
   const { isHydrated, hydrationError } = useLocalHydration();
 
   const { data: profile, isError: profileError, isLoading: profileLoading } = useGetStudentProfile({
@@ -124,6 +147,7 @@ export default function Dashboard() {
     data: scheduleWithControl,
     isLoading: scheduleLoading,
     isError: scheduleError,
+    error: scheduleFetchError,
   } = useQuery<ExtendedSchedule>({
     queryKey: getGetTodayScheduleQueryKey(),
     queryFn: async () => {
@@ -134,7 +158,16 @@ export default function Dashboard() {
       return response.json() as Promise<ExtendedSchedule>;
     },
     refetchInterval: 10000,
+    // One bounded retry so mission fetch retry window stays within loading timeout budget.
+    retry: MISSION_RETRY_LIMIT,
+    retryDelay: (attempt) => Math.min(500 * 2 ** attempt, 2000),
   });
+
+  const isLoadingMission = !isHydrated || profileLoading || scheduleLoading;
+  const { timedOut: missionLoadTimedOut, resetTimeout: resetMissionTimeout } = useBoundedLoading(
+    "dashboard-mission",
+    isLoadingMission,
+  );
 
   useEffect(() => {
     if (!profileLoading && profileError) {
@@ -143,6 +176,27 @@ export default function Dashboard() {
   }, [profileLoading, profileError, setLocation]);
 
   const hasTopics = (topics?.length ?? 0) > 0;
+  const historicalSessionCount = sessions?.length ?? 0;
+  const avgMastery = hasTopics
+    ? (topics ?? []).reduce((sum, topic) => sum + topic.masteryScore, 0) / (topics ?? []).length
+    : 0;
+  const isColdStart =
+    historicalSessionCount < COLD_START_SESSION_THRESHOLD &&
+    avgMastery <= COLD_START_MASTERY_THRESHOLD;
+
+  useEffect(() => {
+    if (scheduleError) {
+      logObservabilityEvent("mission_fetch_failed", {
+        message: scheduleFetchError instanceof Error ? scheduleFetchError.message : "Unknown schedule fetch failure",
+      });
+    }
+  }, [scheduleError, scheduleFetchError]);
+
+  useEffect(() => {
+    if (missionLoadTimedOut) {
+      logObservabilityEvent("fallback_triggered", { scope: "dashboard", reason: "timeout" });
+    }
+  }, [missionLoadTimedOut]);
 
   useEffect(() => {
     const shouldSkipAutoRecalc =
@@ -220,12 +274,47 @@ export default function Dashboard() {
 
   const firstPendingIndex = numberedBlocks.find((nb) => nb.status !== "done")?.index ?? 0;
 
-  const dashboardState: "loading" | "error" | "success" =
-    !isHydrated || profileLoading || scheduleLoading
-      ? "loading"
-      : hydrationError || profileError || scheduleError
+  const fallbackMissionBlocks = useMemo<MissionFallbackBlock[]>(() => {
+    return (topics ?? [])
+      .slice()
+      .sort((a, b) => (b.priorityScore ?? 0) - (a.priorityScore ?? 0))
+      .slice(0, 2)
+      .map((topic, index) => ({
+        isFallback: true,
+        topicId: topic.id,
+        topicName: topic.name,
+        durationMinutes: index === 0 ? FALLBACK_PRIMARY_DURATION_MINUTES : FALLBACK_SECONDARY_DURATION_MINUTES,
+        sessionType: topic.masteryScore < FALLBACK_LECTURE_MASTERY_THRESHOLD ? "lecture" : "practice",
+      }));
+  }, [topics]);
+
+  const hasFallbackMission = fallbackMissionBlocks.length > 0;
+
+  const dashboardState: "loading" | "ready" | "empty" | "error" | "fallback" =
+    isLoadingMission
+      ? missionLoadTimedOut
+        ? "fallback"
+        : "loading"
+      : hydrationError || profileError
         ? "error"
-        : "success";
+        : scheduleError && hasFallbackMission
+          ? "fallback"
+          : scheduleError
+            ? "error"
+            : "ready";
+
+  const showFallbackInCurrentRender = dashboardState === "fallback";
+
+  // Fallback reconciliation: log when the fallback was previously shown but the
+  // real schedule has now loaded successfully.
+  useEffect(() => {
+    if (showFallbackInCurrentRender) {
+      fallbackWasShownRef.current = true;
+    } else if (fallbackWasShownRef.current && dashboardState === "ready") {
+      logObservabilityEvent("fallback_reconciled", { scope: "dashboard" });
+      fallbackWasShownRef.current = false;
+    }
+  }, [showFallbackInCurrentRender, dashboardState]);
 
   if (dashboardState === "loading") {
     return (
@@ -280,6 +369,17 @@ export default function Dashboard() {
   }
 
   const hasMission = hasTopics && Boolean(schedule) && scheduleBlocks.length > 0;
+  const showFallbackMission = dashboardState === "fallback" && hasFallbackMission;
+  const missionBlocksToRender: RenderMissionBlock[] = showFallbackMission
+    ? fallbackMissionBlocks.map((block, index) => ({ block, index, status: "next", isFallback: true }))
+    : numberedBlocks.map((entry) => ({ ...entry, isFallback: false }));
+  const missionCtaHref = hasMission
+    ? `/execute/${firstPendingIndex}`
+    : showFallbackMission
+      ? "/schedule"
+      : hasTopics
+        ? "/schedule"
+        : "/topics";
 
   return (
     <div className="space-y-5" data-testid="dashboard">
@@ -304,7 +404,9 @@ export default function Dashboard() {
             Execute now
           </CardTitle>
           <CardDescription>
-            {hasMission
+            {showFallbackMission
+              ? "Recovery mode mission · lightweight priority blocks while your full schedule reloads."
+              : hasMission
               ? `Target ${formatHoursFromMinutes(totalMinutes)}h · ${remainingMinutes} min left · ${paceBehind ? "Needs catch-up" : "On track"}`
               : "Your mission appears here automatically every day."}
           </CardDescription>
@@ -316,9 +418,9 @@ export default function Dashboard() {
             <span>{momentumLabel}</span>
           </div>
 
-          {hasMission ? (
+          {hasMission || showFallbackMission ? (
             <div className="space-y-2">
-              {numberedBlocks.map(({ block, index, status }) => {
+              {missionBlocksToRender.map(({ block, index, status, isFallback }) => {
                 const badge = missionStatusBadge(status);
                 return (
                   <div key={`${block.topicId}-${index}`} className="rounded-lg border px-3 py-2.5 bg-muted/20">
@@ -333,10 +435,16 @@ export default function Dashboard() {
                         {badge.label}
                       </Badge>
                     </div>
-                    <details className="mt-2 text-xs text-muted-foreground">
-                      <summary className="cursor-pointer hover:text-foreground">Why this topic?</summary>
-                      <p className="mt-1 leading-relaxed">{blockReason(block)}</p>
-                    </details>
+                    {!isFallback ? (
+                      <details className="mt-2 text-xs text-muted-foreground">
+                        <summary className="cursor-pointer hover:text-foreground">Why this topic?</summary>
+                        <p className="mt-1 leading-relaxed">{blockReason(block)}</p>
+                      </details>
+                    ) : (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Recovery mode pick to keep momentum while the full mission reloads.
+                      </p>
+                    )}
                   </div>
                 );
               })}
@@ -349,15 +457,20 @@ export default function Dashboard() {
             </div>
           )}
 
-          <Link href={hasMission ? `/execute/${firstPendingIndex}` : hasTopics ? "/schedule" : "/topics"}>
+          <Link href={missionCtaHref}>
             <Button className="w-full" data-testid="button-open-schedule-flow">
               Start Focused Session
               <ArrowRight className="h-4 w-4 ml-2" />
             </Button>
           </Link>
-          {!hasMission && (
+          {!hasMission && !showFallbackMission && (
             <p className="text-xs text-muted-foreground">
               {hasTopics ? "Need a fresh mission? Recalculate once in Schedule." : "Add topics first, then launch your first focused session."}
+            </p>
+          )}
+          {showFallbackMission && (
+            <p className="text-xs text-muted-foreground">
+              Fallback mode active. Use this minimal mission now, then retry full mission generation.
             </p>
           )}
         </CardContent>
@@ -368,7 +481,12 @@ export default function Dashboard() {
           <CardTitle className="text-sm">What to do now</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
-          {hasMission && paceBehind ? (
+          {isColdStart ? (
+            <div className="flex items-start gap-2" role="status" aria-live="polite">
+              <Clock3 className="h-4 w-4 mt-0.5 text-muted-foreground" />
+              <span>Too early to estimate — start building momentum with today’s first block.</span>
+            </div>
+          ) : hasMission && paceBehind ? (
             <div className="flex items-start gap-2" role="status" aria-live="polite">
               <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-600" />
               <span>At your current pace, you may not complete the syllabus on time.</span>
@@ -380,7 +498,7 @@ export default function Dashboard() {
             </div>
           )}
 
-          {hasMission && paceBehind && (
+          {hasMission && paceBehind && !isColdStart && (
             <div className="flex items-start gap-2" role="status" aria-live="polite">
               <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-600" />
               <span>You need about <span className="font-medium">+{suggestedCatchupHours.toFixed(1)} hours/day</span> this week to stay on track.</span>
@@ -391,6 +509,38 @@ export default function Dashboard() {
             <CircleCheck className="h-4 w-4 mt-0.5 text-emerald-600" />
             <span>{interventionMessage(intervention)}</span>
           </div>
+
+          {(() => {
+              const confidenceLevel =
+                historicalSessionCount < COLD_START_SESSION_THRESHOLD
+                  ? "Low"
+                  : historicalSessionCount < MEDIUM_CONFIDENCE_SESSION_THRESHOLD
+                  ? "Medium"
+                  : "High";
+              const confidenceMsg =
+                historicalSessionCount < COLD_START_SESSION_THRESHOLD
+                  ? `Insufficient data (stabilizes after ${COLD_START_SESSION_THRESHOLD}–7 days).`
+                  : "Using observed behavior history.";
+              return (
+                <div className="rounded-md border px-3 py-2 text-xs text-muted-foreground">
+                  Forecast confidence: {confidenceLevel} · {confidenceMsg}
+                </div>
+              );
+            })()}
+
+          {(dashboardState === "fallback" || showFallbackMission) && (
+            <Button
+              variant="outline"
+              onClick={() => {
+                logObservabilityEvent("retry_requested", { scope: "dashboard" });
+                resetMissionTimeout();
+                queryClient.invalidateQueries({ queryKey: getGetTodayScheduleQueryKey() });
+                queryClient.invalidateQueries({ queryKey: getGetStudentProfileQueryKey() });
+              }}
+            >
+              Retry mission load
+            </Button>
+          )}
         </CardContent>
       </Card>
 

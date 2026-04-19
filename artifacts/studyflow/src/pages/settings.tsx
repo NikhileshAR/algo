@@ -27,6 +27,7 @@ import { useEffect } from "react";
 import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
 import { Link } from "wouter";
 import { useLocalHydration } from "@/hooks/use-local-hydration";
+import { studyflowQueryKeys } from "@/lib/query-keys";
 
 const settingsSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -104,7 +105,7 @@ export default function Settings() {
   const { isHydrated } = useLocalHydration();
   const { data: profile, isLoading } = useGetStudentProfile();
   const { data: weeklySignals } = useQuery<WeeklySignals>({
-    queryKey: ["analytics", "weekly-review", "signals"],
+    queryKey: studyflowQueryKeys.analyticsWeeklyReviewSignals(),
     queryFn: () => fetch("/api/analytics/weekly-review").then((r) => r.json()),
   });
   const updateProfile = useUpdateStudentProfile();

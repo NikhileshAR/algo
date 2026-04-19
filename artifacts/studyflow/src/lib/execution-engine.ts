@@ -173,6 +173,8 @@ export interface PersistedExecution {
   sessionType: "lecture" | "practice";
   startedAt: number;  // epoch ms
   elapsedSeconds: number;
+  /** Deterministic schedule fingerprint captured when the session started. */
+  scheduleVersionId?: string;
 }
 
 export function saveActiveExecution(data: PersistedExecution): void {
@@ -252,4 +254,23 @@ export function loadLastRating(): UnderstandingRating | null {
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Schedule versioning
+// ---------------------------------------------------------------------------
+
+/**
+ * Computes a deterministic fingerprint string for a schedule's block sequence.
+ *
+ * The fingerprint is the ordered join of `topicId:sessionType` for every
+ * block.  It changes whenever blocks are added, removed, or reordered, giving
+ * a cheap way to detect mid-session schedule recalculation without storing
+ * the entire schedule.
+ */
+export function computeScheduleVersionId(
+  blocks: Array<{ topicId: number; sessionType: string }>,
+): string {
+  if (blocks.length === 0) return "empty";
+  return blocks.map((b) => `${b.topicId}:${b.sessionType}`).join("|");
 }

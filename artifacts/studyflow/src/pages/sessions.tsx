@@ -3,9 +3,29 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { History, FlaskConical, BookOpen } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { useQueryClient } from "@tanstack/react-query";
+import { getListSessionsQueryKey } from "@workspace/api-client-react";
+import { useLocalHydration } from "@/hooks/use-local-hydration";
+import { useBoundedLoading } from "@/hooks/use-bounded-loading";
+import { logObservabilityEvent } from "@/lib/observability";
+import { useEffect } from "react";
 
 export default function Sessions() {
+  const queryClient = useQueryClient();
+  const { isHydrated } = useLocalHydration();
   const { data: sessions, isLoading } = useListSessions({ limit: 50 });
+  const isLoadingSessions = !isHydrated || isLoading;
+  const { timedOut: sessionsTimedOut, resetTimeout: resetSessionsTimeout } = useBoundedLoading(
+    "sessions-page",
+    isLoadingSessions,
+  );
+
+  useEffect(() => {
+    if (sessionsTimedOut) {
+      logObservabilityEvent("fallback_triggered", { scope: "sessions-page", reason: "timeout" });
+    }
+  }, [sessionsTimedOut]);
 
   return (
     <div className="space-y-6" data-testid="sessions-page">
@@ -14,18 +34,34 @@ export default function Sessions() {
         <p className="text-muted-foreground">{sessions?.length ?? 0} sessions logged</p>
       </div>
 
-      {isLoading ? (
+      {isLoadingSessions && !sessionsTimedOut ? (
         <div className="space-y-3">
           {Array.from({ length: 5 }).map((_, i) => (
             <Skeleton key={i} className="h-20" />
           ))}
         </div>
+      ) : sessionsTimedOut ? (
+        <Card>
+          <CardContent className="py-6 space-y-3 text-sm text-muted-foreground">
+            <p>Session history is taking longer than expected. Fallback mode is active.</p>
+            <Button
+              variant="outline"
+              onClick={() => {
+                logObservabilityEvent("retry_requested", { scope: "sessions-page" });
+                resetSessionsTimeout();
+                queryClient.invalidateQueries({ queryKey: getListSessionsQueryKey() });
+              }}
+            >
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
       ) : sessions && sessions.length > 0 ? (
         <div className="space-y-2">
           {sessions.map((session) => (
             <Card key={session.id} data-testid={`session-${session.id}`}>
               <CardContent className="pt-4 pb-4">
-                <div className="flex items-start justify-between gap-4">
+                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
                   <div className="flex items-start gap-3">
                     <div className="mt-0.5 text-muted-foreground">
                       {session.sessionType === "practice" ? (
@@ -34,9 +70,9 @@ export default function Sessions() {
                         <BookOpen className="h-5 w-5" />
                       )}
                     </div>
-                    <div>
+                    <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="font-semibold">{session.topicName}</h3>
+                        <h3 className="font-semibold break-words">{session.topicName}</h3>
                         <Badge variant={session.sessionType === "practice" ? "default" : "secondary"} className="text-xs">
                           {session.sessionType}
                         </Badge>
@@ -51,7 +87,7 @@ export default function Sessions() {
                       )}
                     </div>
                   </div>
-                  <div className="text-right shrink-0">
+                  <div className="text-right shrink-0 w-full sm:w-auto">
                     <p className="text-sm font-medium">{session.durationMinutes}m</p>
                     <p className="text-xs text-muted-foreground">
                       {new Date(session.studiedAt).toLocaleDateString("en-US", {

@@ -6,9 +6,6 @@ import {
   useUpdateTopic,
   useDeleteTopic,
   useGetDashboardSummary,
-  getListTopicsQueryKey,
-  getGetDashboardSummaryQueryKey,
-  getGetPriorityTopicsQueryKey,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -49,6 +46,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Search, Library, Trash2, CheckCircle, Circle, TrendingUp, Lock, Upload, ChevronDown, ChevronUp, FlaskConical, BookOpen } from "lucide-react";
+import { studyflowQueryKeys } from "@/lib/query-keys";
+import { invalidateAfterTopicsChange } from "@/lib/query-invalidation";
 
 const topicSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -146,7 +145,7 @@ function BlockedByInfo({ topic, allTopics }: { topic: { prerequisites: number[];
 
 function TopicHistory({ topicId }: { topicId: number }) {
   const { data: sessions, isLoading } = useQuery<Array<{ id: number; sessionType: string; durationMinutes: number; testScore: number | null; testScoreMax: number | null; studiedAt: string }>>({
-    queryKey: ["sessions", "topic", topicId],
+    queryKey: studyflowQueryKeys.sessionsByTopic(topicId),
     queryFn: () => fetch(`/api/sessions?topicId=${topicId}&limit=10`).then((r) => r.json()),
   });
 
@@ -245,9 +244,7 @@ export default function Topics() {
   });
 
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: getListTopicsQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetPriorityTopicsQueryKey() });
+    invalidateAfterTopicsChange(queryClient);
   };
 
   function onSubmit(data: z.infer<typeof topicSchema>) {
