@@ -9,10 +9,30 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLocalHydration } from "@/hooks/use-local-hydration";
 import { useBoundedLoading } from "@/hooks/use-bounded-loading";
+import { useCrossTabSync } from "@/hooks/use-cross-tab-sync";
 import { logObservabilityEvent } from "@/lib/observability";
 import Onboarding from "@/pages/onboarding";
 
 const queryClient = new QueryClient();
+
+/**
+ * Inner shell rendered inside QueryClientProvider.
+ * Mounts cross-tab sync listener so every open tab stays consistent.
+ */
+function AppShell() {
+  useCrossTabSync();
+  return (
+    <TooltipProvider>
+      <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+        <Switch>
+          <Route path="/onboarding" component={Onboarding} />
+          <Route component={AppRouter} />
+        </Switch>
+      </WouterRouter>
+      <Toaster />
+    </TooltipProvider>
+  );
+}
 
 function App() {
   const { isHydrated, hydrationError } = useLocalHydration();
@@ -70,15 +90,7 @@ function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-          <Switch>
-            <Route path="/onboarding" component={Onboarding} />
-            <Route component={AppRouter} />
-          </Switch>
-        </WouterRouter>
-        <Toaster />
-      </TooltipProvider>
+      <AppShell />
     </QueryClientProvider>
   );
 }

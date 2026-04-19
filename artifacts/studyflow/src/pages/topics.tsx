@@ -6,9 +6,6 @@ import {
   useUpdateTopic,
   useDeleteTopic,
   useGetDashboardSummary,
-  getListTopicsQueryKey,
-  getGetDashboardSummaryQueryKey,
-  getGetPriorityTopicsQueryKey,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -50,6 +47,7 @@ import * as z from "zod";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Search, Library, Trash2, CheckCircle, Circle, TrendingUp, Lock, Upload, ChevronDown, ChevronUp, FlaskConical, BookOpen } from "lucide-react";
 import { studyflowQueryKeys } from "@/lib/query-keys";
+import { invalidateAfterTopicsChange } from "@/lib/query-invalidation";
 
 const topicSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -246,9 +244,7 @@ export default function Topics() {
   });
 
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: getListTopicsQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetPriorityTopicsQueryKey() });
+    invalidateAfterTopicsChange(queryClient);
   };
 
   function onSubmit(data: z.infer<typeof topicSchema>) {

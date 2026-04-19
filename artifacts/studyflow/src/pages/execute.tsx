@@ -46,6 +46,7 @@ import {
 import { recordManualTelemetryEvent } from "@/lib/local-db/bridge";
 import { runFeedbackLoop } from "@/lib/feedback-loop";
 import { invalidateAfterSessionLog } from "@/lib/query-invalidation";
+import { logObservabilityEvent } from "@/lib/observability";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -108,6 +109,37 @@ const RATING_LABELS: Record<UnderstandingRating, string> = {
 const MIN_SESSION_MINUTES = 1;
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+type ScheduleBlock = ReturnType<typeof useGetTodaySchedule>["data"] extends
+  { blocks: Array<infer B> } | undefined ? B : never;
+
+/**
+ * Build a minimal degraded block from persisted session data when the live
+ * schedule is no longer available (e.g. schedule was recalculated while the
+ * user was away).  Only topicId/topicName/sessionType are required for the
+ * session-log API call; other fields default to neutral values.
+ */
+function syntheticBlock(
+  topicId: number,
+  topicName: string,
+  sessionType: "lecture" | "practice",
+  elapsedSeconds: number,
+): ScheduleBlock {
+  return {
+    topicId,
+    topicName,
+    sessionType,
+    // Use elapsed time as a best-guess for duration; 0 when unknown.
+    durationMinutes: elapsedSeconds > 0 ? Math.ceil(elapsedSeconds / 60) : 0,
+    subject: "",
+    masteryScore: 0,
+    priorityScore: 0,
+  } as ScheduleBlock;
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -134,6 +166,59 @@ export default function Execute() {
   // Phase state
   const [phase, setPhase] = useState<ExecutionPhase>("pre_start");
 
+  // ---------------------------------------------------------------------------
+  // Execution block locking
+  //
+  // Once the user starts (or resumes) a session we take a snapshot of `block`
+  // and freeze it.  Subsequent schedule refetches/recalculations cannot mutate
+  // the block that is currently being studied, preventing data loss or incorrect
+  // topic attribution on session save.
+  // ---------------------------------------------------------------------------
+  const lockedBlockRef = useRef<typeof block | null>(null);
+
+  /** True once the user has left the pre_start phase. */
+  const isSessionStarted = phase !== "pre_start";
+
+  /**
+   * The block to use for all execution operations.
+   * - Before session start: live block from current schedule.
+   * - After session start: the snapshot taken at handleStart/handleResume.
+   *   Falls back to live block only if the lock was never set (shouldn't happen).
+   */
+  const activeBlock = (isSessionStarted ? lockedBlockRef.current : block) ?? block;
+
+  // ---------------------------------------------------------------------------
+  // Consistency assertions
+  // ---------------------------------------------------------------------------
+
+  useEffect(() => {
+    if (!schedule) return;
+
+    // Assert: blockIndex is within schedule bounds
+    if (blocks.length > 0 && blockIndex >= blocks.length) {
+      logObservabilityEvent("execution_block_out_of_bounds", {
+        blockIndex,
+        scheduleBlockCount: blocks.length,
+      });
+    }
+
+    // Assert: locked block still matches live schedule after recalculation
+    if (isSessionStarted && lockedBlockRef.current && block) {
+      if (lockedBlockRef.current.topicId !== block.topicId) {
+        logObservabilityEvent("execution_block_mismatch", {
+          blockIndex,
+          lockedTopicId: lockedBlockRef.current.topicId,
+          liveTopicId: block.topicId,
+        });
+      }
+    }
+  // The consistency check deliberately depends only on `schedule` and
+  // `blockIndex` to avoid running on every re-render.  `isSessionStarted`
+  // and `block` are derived from `schedule` + state so their current values
+  // are always fresh when the effect fires.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schedule, blockIndex]);
+
   // Timer
   const [elapsed, setElapsed] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -158,8 +243,8 @@ export default function Execute() {
 
   // Last rating from previous session
   const lastRating = loadLastRating();
-  const adaptiveOverlay = block
-    ? computeAdaptiveOverlay(lastRating, block.sessionType as "lecture" | "practice")
+  const adaptiveOverlay = activeBlock
+    ? computeAdaptiveOverlay(lastRating, activeBlock.sessionType as "lecture" | "practice")
     : null;
 
   // Completed sessions today
@@ -181,19 +266,20 @@ export default function Execute() {
     };
   }, [blockIndex]);
 
-  // Persist active execution to sessionStorage on every tick
+  // Persist active execution to sessionStorage on every tick (use activeBlock
+  // so the persisted data stays consistent even if schedule is refetched)
   useEffect(() => {
-    if (phase === "active" && block) {
+    if (phase === "active" && activeBlock) {
       saveActiveExecution({
         blockIndex,
-        topicId: block.topicId,
-        topicName: block.topicName,
-        sessionType: block.sessionType as "lecture" | "practice",
+        topicId: activeBlock.topicId,
+        topicName: activeBlock.topicName,
+        sessionType: activeBlock.sessionType as "lecture" | "practice",
         startedAt: startedAtRef.current,
         elapsedSeconds: elapsed,
       });
     }
-  }, [phase, block, blockIndex, elapsed]);
+  }, [phase, activeBlock, blockIndex, elapsed]);
 
   // ---------------------------------------------------------------------------
   // Timer controls
@@ -218,6 +304,9 @@ export default function Execute() {
   // ---------------------------------------------------------------------------
 
   function handleStart() {
+    // Lock the current block so schedule refetches cannot mutate it mid-session.
+    lockedBlockRef.current = block;
+    logObservabilityEvent("execution_block_locked", { blockIndex, topicId: block?.topicId });
     clearActiveExecution();
     setPendingResume(null);
     startTimer();
@@ -225,6 +314,19 @@ export default function Execute() {
   }
 
   function handleResume(persisted: NonNullable<ReturnType<typeof loadActiveExecution>>) {
+    // Prefer live block; fall back to a synthetic block built from persisted
+    // data if the schedule was recalculated while the user was away.
+    lockedBlockRef.current = block ?? syntheticBlock(
+      persisted.topicId,
+      persisted.topicName,
+      persisted.sessionType,
+      persisted.elapsedSeconds,
+    );
+    logObservabilityEvent("execution_block_locked", {
+      blockIndex,
+      topicId: lockedBlockRef.current.topicId,
+      fromPersisted: block === null,
+    });
     clearActiveExecution();
     setPendingResume(null);
     // Continue elapsed from persisted value
@@ -236,6 +338,15 @@ export default function Execute() {
   }
 
   function handleAbandonResume() {
+    // Lock before entering post_session so block data is available for save.
+    if (!lockedBlockRef.current) {
+      lockedBlockRef.current = block ?? (pendingResume ? syntheticBlock(
+        pendingResume.topicId,
+        pendingResume.topicName,
+        pendingResume.sessionType,
+        0,
+      ) : null);
+    }
     clearActiveExecution();
     setPendingResume(null);
     // Mark the partial session and go to post_session with partial status pre-selected
@@ -252,13 +363,14 @@ export default function Execute() {
 
   function handleInterrupt() {
     stopTimer();
-    // Persist current state so resume prompt shows on return
-    if (block) {
+    // Persist current state so resume prompt shows on return (use activeBlock
+    // which is the locked snapshot, not the potentially-stale live block).
+    if (activeBlock) {
       saveActiveExecution({
         blockIndex,
-        topicId: block.topicId,
-        topicName: block.topicName,
-        sessionType: block.sessionType as "lecture" | "practice",
+        topicId: activeBlock.topicId,
+        topicName: activeBlock.topicName,
+        sessionType: activeBlock.sessionType as "lecture" | "practice",
         startedAt: startedAtRef.current,
         elapsedSeconds: elapsed,
       });
@@ -280,7 +392,7 @@ export default function Execute() {
   }
 
   function handleSaveSession() {
-    if (!block || completionStatus === null || selfRating === null) return;
+    if (!activeBlock || completionStatus === null || selfRating === null) return;
 
     const actualMinutes = Math.max(MIN_SESSION_MINUTES, Math.ceil(elapsed / 60));
     const ratio = completionRatio(completionStatus);
@@ -306,8 +418,8 @@ export default function Execute() {
     logSession.mutate(
       {
         data: {
-          topicId: block.topicId,
-          sessionType: block.sessionType as "lecture" | "practice",
+          topicId: activeBlock.topicId,
+          sessionType: activeBlock.sessionType as "lecture" | "practice",
           durationMinutes: Math.max(1, effectiveMinutes),
           notes: notes.trim() || undefined,
         },
@@ -317,15 +429,15 @@ export default function Execute() {
           invalidateAfterSessionLog(queryClient);
 
           void recordManualTelemetryEvent({
-            topic: block.topicName,
+            topic: activeBlock.topicName,
             durationMinutes: effectiveMinutes,
             title: notes.trim() || undefined,
           });
 
           void runFeedbackLoop({
-            topicId: String(block.topicId),
-            topicName: block.topicName,
-            serverMastery: block.masteryScore,
+            topicId: String(activeBlock.topicId),
+            topicName: activeBlock.topicName,
+            serverMastery: activeBlock.masteryScore,
             focusedMinutes: effectiveMinutes,
           });
 
@@ -385,7 +497,7 @@ export default function Execute() {
 
   const inCommitmentWindow = isInCommitmentWindow(elapsed);
   const commitmentRemaining = commitmentWindowRemainingSeconds(elapsed);
-  const sessionTargetMinutes = block?.durationMinutes ?? 0;
+  const sessionTargetMinutes = activeBlock?.durationMinutes ?? 0;
   const progressPct = sessionTargetMinutes > 0
     ? Math.min(100, Math.round((elapsed / (sessionTargetMinutes * 60)) * 100))
     : 0;
@@ -396,14 +508,46 @@ export default function Execute() {
 
   // ---------------------------------------------------------------------------
   // Guard: no schedule
+  //
+  // Only redirect to the schedule page when the session has NOT yet started.
+  // Once execution is underway (block is locked) a schedule refetch that
+  // returns empty data must NOT evict the user from an active session.
   // ---------------------------------------------------------------------------
 
-  if (!schedule || blocks.length === 0 || !block) {
+  if (!isSessionStarted && (!schedule || blocks.length === 0 || !block)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="text-center space-y-3 max-w-sm">
           <p className="text-muted-foreground">No study blocks scheduled for today.</p>
           <Button onClick={() => navigate("/schedule")}>Back to Schedule</Button>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Safe recovery: session started but block data is unavailable
+  //
+  // This can happen if the locked snapshot was never set (shouldn't occur in
+  // normal flow) or was somehow lost.  Show a recoverable state — never blank.
+  // ---------------------------------------------------------------------------
+
+  // Log once via ref so the observability event isn't re-emitted on every render.
+  const scheduleLostLoggedRef = useRef(false);
+  if (!activeBlock) {
+    if (!scheduleLostLoggedRef.current) {
+      scheduleLostLoggedRef.current = true;
+      logObservabilityEvent("execution_schedule_lost", { blockIndex, phase });
+    }
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background px-4">
+        <div className="text-center space-y-3 max-w-sm">
+          <AlertTriangle className="h-8 w-8 text-amber-500 mx-auto" />
+          <p className="font-medium">Session data is temporarily unavailable.</p>
+          <p className="text-sm text-muted-foreground">
+            Your progress has been preserved. Return to the schedule to continue.
+          </p>
+          <Button onClick={() => navigate("/schedule")}>Return to Schedule</Button>
         </div>
       </div>
     );
@@ -511,7 +655,7 @@ export default function Execute() {
             <h2 className="text-xl font-bold">Session paused</h2>
             <p className="text-sm text-muted-foreground">
               You have studied {formatTime(elapsed)} on{" "}
-              <span className="font-medium">{block.topicName}</span>. Would you like to
+              <span className="font-medium">{activeBlock.topicName}</span>. Would you like to
               continue?
             </p>
           </div>
@@ -537,7 +681,7 @@ export default function Execute() {
           <div className="text-center">
             <h2 className="text-xl font-bold">Session complete</h2>
             <p className="text-sm text-muted-foreground">
-              {block.topicName} · {formatTime(elapsed)} studied
+              {activeBlock.topicName} · {formatTime(elapsed)} studied
             </p>
           </div>
 
@@ -633,7 +777,7 @@ export default function Execute() {
             Pause
           </button>
           <span className="text-xs text-muted-foreground">
-            {block.topicName} · {block.sessionType}
+            {activeBlock.topicName} · {activeBlock.sessionType}
           </span>
           <Badge variant="outline" className="text-xs">
             Block {blockIndex + 1}/{blocks.length}
@@ -740,20 +884,20 @@ export default function Execute() {
               <span className="text-xs text-muted-foreground uppercase tracking-wide">
                 Block {blockIndex + 1} of {blocks.length}
               </span>
-              <Badge variant={block.sessionType === "practice" ? "default" : "secondary"}>
-                {block.sessionType}
+              <Badge variant={activeBlock.sessionType === "practice" ? "default" : "secondary"}>
+                {activeBlock.sessionType}
               </Badge>
             </div>
-            <h1 className="text-2xl font-bold">{block.topicName}</h1>
-            <p className="text-muted-foreground text-sm">{block.subject}</p>
+            <h1 className="text-2xl font-bold">{activeBlock.topicName}</h1>
+            <p className="text-muted-foreground text-sm">{activeBlock.subject}</p>
           </div>
 
           <div className="flex items-center gap-6 text-sm text-muted-foreground">
             <span>
-              <span className="font-semibold text-foreground">{block.durationMinutes}</span> min planned
+              <span className="font-semibold text-foreground">{activeBlock.durationMinutes}</span> min planned
             </span>
             <span>
-              Mastery: <span className="font-semibold text-foreground">{Math.round(block.masteryScore * 100)}%</span>
+              Mastery: <span className="font-semibold text-foreground">{Math.round(activeBlock.masteryScore * 100)}%</span>
             </span>
           </div>
 

@@ -61,6 +61,9 @@ const MISSION_RETRY_LIMIT = 1;
 const COLD_START_SESSION_THRESHOLD = 5;
 const COLD_START_MASTERY_THRESHOLD = 0.1;
 const FALLBACK_LECTURE_MASTERY_THRESHOLD = 0.2;
+const FALLBACK_PRIMARY_DURATION_MINUTES = 30;
+const FALLBACK_SECONDARY_DURATION_MINUTES = 20;
+const MEDIUM_CONFIDENCE_SESSION_THRESHOLD = 14;
 
 type BlockWithExplanation = DailySchedule["blocks"][number] & {
   explanation?: {
@@ -130,6 +133,8 @@ export default function Dashboard() {
   const queryClient = useQueryClient();
   const recalculate = useRecalculateSchedule();
   const attemptedAutoRecalcRef = useRef(false);
+  // Track whether a fallback mission was shown so we can log reconciliation.
+  const fallbackWasShownRef = useRef(false);
   const { isHydrated, hydrationError } = useLocalHydration();
 
   const { data: profile, isError: profileError, isLoading: profileLoading } = useGetStudentProfile({
@@ -278,7 +283,7 @@ export default function Dashboard() {
         isFallback: true,
         topicId: topic.id,
         topicName: topic.name,
-        durationMinutes: index === 0 ? 30 : 20,
+        durationMinutes: index === 0 ? FALLBACK_PRIMARY_DURATION_MINUTES : FALLBACK_SECONDARY_DURATION_MINUTES,
         sessionType: topic.masteryScore < FALLBACK_LECTURE_MASTERY_THRESHOLD ? "lecture" : "practice",
       }));
   }, [topics]);
@@ -297,6 +302,19 @@ export default function Dashboard() {
           : scheduleError
             ? "error"
             : "ready";
+
+  const showFallbackInCurrentRender = dashboardState === "fallback";
+
+  // Fallback reconciliation: log when the fallback was previously shown but the
+  // real schedule has now loaded successfully.
+  useEffect(() => {
+    if (showFallbackInCurrentRender) {
+      fallbackWasShownRef.current = true;
+    } else if (fallbackWasShownRef.current && dashboardState === "ready") {
+      logObservabilityEvent("fallback_reconciled", { scope: "dashboard" });
+      fallbackWasShownRef.current = false;
+    }
+  }, [showFallbackInCurrentRender, dashboardState]);
 
   if (dashboardState === "loading") {
     return (
@@ -492,10 +510,23 @@ export default function Dashboard() {
             <span>{interventionMessage(intervention)}</span>
           </div>
 
-          <div className="rounded-md border px-3 py-2 text-xs text-muted-foreground">
-            Forecast confidence: {historicalSessionCount < COLD_START_SESSION_THRESHOLD ? "Low" : historicalSessionCount < 14 ? "Medium" : "High"} ·{" "}
-            {historicalSessionCount < COLD_START_SESSION_THRESHOLD ? "Insufficient data (stabilizes after 5–7 days)." : "Using observed behavior history."}
-          </div>
+          {(() => {
+              const confidenceLevel =
+                historicalSessionCount < COLD_START_SESSION_THRESHOLD
+                  ? "Low"
+                  : historicalSessionCount < MEDIUM_CONFIDENCE_SESSION_THRESHOLD
+                  ? "Medium"
+                  : "High";
+              const confidenceMsg =
+                historicalSessionCount < COLD_START_SESSION_THRESHOLD
+                  ? `Insufficient data (stabilizes after ${COLD_START_SESSION_THRESHOLD}–7 days).`
+                  : "Using observed behavior history.";
+              return (
+                <div className="rounded-md border px-3 py-2 text-xs text-muted-foreground">
+                  Forecast confidence: {confidenceLevel} · {confidenceMsg}
+                </div>
+              );
+            })()}
 
           {(dashboardState === "fallback" || showFallbackMission) && (
             <Button
