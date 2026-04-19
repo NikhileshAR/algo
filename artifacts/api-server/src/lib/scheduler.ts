@@ -1,4 +1,10 @@
-import { db, topicsTable, studentProfileTable, studySessionsTable } from "@workspace/db";
+import {
+  db,
+  topicsTable,
+  studentProfileTable,
+  studySessionsTable,
+  topicOverridesTable,
+} from "@workspace/db";
 import { desc, eq, gte } from "drizzle-orm";
 import { logger } from "./logger";
 
@@ -166,6 +172,8 @@ interface TopicBehaviorSignal {
   reduceBlockFactor: number;
   splitRecommended: boolean;
   alternateSessionType: "lecture" | "practice" | null;
+  priorityMultiplier: number;
+  overrideSkipCount: number;
 }
 
 interface BehavioralContext {
@@ -217,10 +225,11 @@ function deriveBehavioralContext(params: {
   profile: ProfileRow;
   topics: TopicRow[];
   sessions: Array<typeof studySessionsTable.$inferSelect>;
+  overrides: Array<typeof topicOverridesTable.$inferSelect>;
   daysUntilExamValue: number;
 }): BehavioralContext {
   const base = defaultBehavioralContext(params.daysUntilExamValue);
-  if (params.sessions.length === 0) return base;
+  if (params.sessions.length === 0 && params.overrides.length === 0) return base;
 
   const reliability = smoothstep(BEHAVIOR_MIN_SESSIONS, 30, params.sessions.length);
   const effectiveBlend = Math.min(BEHAVIOR_STABILITY_MAX_BLEND, reliability);
@@ -320,6 +329,41 @@ function deriveBehavioralContext(params: {
           : dominantType === "practice"
             ? "lecture"
             : "practice",
+      priorityMultiplier: 1,
+      overrideSkipCount: 0,
+    });
+  }
+
+  const topicsById = new Map(params.topics.map((topic) => [topic.id, topic]));
+  const overrideSkipCounts = new Map<number, number>();
+  for (const override of params.overrides) {
+    overrideSkipCounts.set(
+      override.skippedTopicId,
+      (overrideSkipCounts.get(override.skippedTopicId) ?? 0) + 1,
+    );
+  }
+  for (const [topicId, skipCount] of overrideSkipCounts.entries()) {
+    if (skipCount < 2) continue;
+    const topic = topicsById.get(topicId);
+    if (!topic) continue;
+    const skipIntensity = clamp((skipCount - 1) / 4, 0, 1);
+    const existing = topicSignals.get(topicId);
+    const mergedStruggle = Math.max(existing?.struggleScore ?? 0, clamp(0.55 + skipIntensity * 0.35, 0, 1));
+    const mergedReduceFactor = Math.min(
+      existing?.reduceBlockFactor ?? 1,
+      clamp(1 - 0.4 * skipIntensity, 0.5, 1),
+    );
+    const delayHeavySessions = topic.difficultyLevel >= 4 || topic.masteryScore < 0.35;
+    const mergedPriorityMultiplier = delayHeavySessions
+      ? Math.min(existing?.priorityMultiplier ?? 1, clamp(1 - 0.3 * skipIntensity, 0.7, 1))
+      : (existing?.priorityMultiplier ?? 1);
+    topicSignals.set(topicId, {
+      struggleScore: Math.round(mergedStruggle * 1000) / 1000,
+      reduceBlockFactor: mergedReduceFactor,
+      splitRecommended: true,
+      alternateSessionType: "lecture",
+      priorityMultiplier: mergedPriorityMultiplier,
+      overrideSkipCount: skipCount,
     });
   }
 
@@ -576,6 +620,7 @@ function computePriorityBreakdown(
   const struggleMultiplier = struggleSignal
     ? clamp(1 + 0.2 * struggleSignal.struggleScore * behavioral.reliability, 1, 1.2)
     : 1;
+  const overridePriorityMultiplier = struggleSignal?.priorityMultiplier ?? 1;
 
   // Proactive 11th maintenance: soft boost for class-11 topics when recent exposure is sparse.
   const topicClassForBoost = topicClasses.get(topic.id) ?? "unknown";
@@ -587,7 +632,7 @@ function computePriorityBreakdown(
     lowMastery * 0.35 +
     dependencyPressure * 0.1 +
     decayPressure * 0.05
-  ) * disciplineMod * temporalWeight * recencyMultiplier * exposureBoost * divergenceMultiplier * preExamWeight * struggleMultiplier;
+  ) * disciplineMod * temporalWeight * recencyMultiplier * exposureBoost * divergenceMultiplier * preExamWeight * struggleMultiplier * overridePriorityMultiplier;
 
   return {
     priority: total,
@@ -1069,10 +1114,17 @@ async function loadBehavioralContext(
     .where(gte(studySessionsTable.studiedAt, since))
     .orderBy(desc(studySessionsTable.studiedAt))
     .limit(800);
+  const overrides = await db
+    .select()
+    .from(topicOverridesTable)
+    .where(gte(topicOverridesTable.createdAt, since))
+    .orderBy(desc(topicOverridesTable.createdAt))
+    .limit(500);
   return deriveBehavioralContext({
     profile,
     topics,
     sessions,
+    overrides,
     daysUntilExamValue,
   });
 }

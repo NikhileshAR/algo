@@ -37,7 +37,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { useToast } from "@/hooks/use-toast";
-import { RefreshCw, Clock, CheckCircle2, BookOpen, Target, Info, Play, Square } from "lucide-react";
+import { RefreshCw, Clock, CheckCircle2, BookOpen, Info, Play, Square, Shuffle, AlertTriangle } from "lucide-react";
 import { recordManualTelemetryEvent, syncSchedulerTelemetryInput } from "@/lib/local-db/bridge";
 import { runFeedbackLoop } from "@/lib/feedback-loop";
 import { useLocalHydration } from "@/hooks/use-local-hydration";
@@ -81,6 +81,60 @@ const STUDY_DAY_DURATION_HOURS = 16;
 const ON_TRACK_GRACE_MINUTES = 10;
 const MOMENTUM_THRESHOLD_SECONDS = 10 * 60;
 const TOTAL_PREPARATION_HORIZON_DAYS = 730;
+const SWAP_SOFT_LIMIT = 2;
+
+interface ScheduleOverrideBudget {
+  used: number;
+  softLimit: number;
+}
+
+interface SwapApiResponse {
+  blocks?: Array<{
+    topicId: number;
+    topicName: string;
+    subject: string;
+    sessionType: "lecture" | "practice";
+    durationMinutes: number;
+    priorityScore: number;
+    masteryScore: number;
+  }>;
+  overrideBudget?: ScheduleOverrideBudget;
+  swap?: {
+    wasRecommended?: boolean;
+  };
+}
+
+interface SwapOption {
+  id: number;
+  name: string;
+  subject: string;
+  difficultyLevel: number;
+  priorityScore: number;
+}
+
+function scoreSwapOption(target: SwapOption, candidate: SwapOption): number {
+  const sameSubjectBonus = candidate.subject === target.subject ? 1 : 0;
+  const priorityDistance = Math.abs((candidate.priorityScore ?? 0) - (target.priorityScore ?? 0));
+  const difficultyDistance = Math.abs((candidate.difficultyLevel ?? 3) - (target.difficultyLevel ?? 3));
+  return sameSubjectBonus * 2 - priorityDistance * 1.2 - difficultyDistance * 0.35;
+}
+
+function buildRecommendedSwapIds(
+  current: SwapOption,
+  allTopics: SwapOption[],
+): number[] {
+  const ranked = allTopics
+    .filter((topic) => topic.id !== current.id)
+    .map((topic) => ({
+      id: topic.id,
+      score: scoreSwapOption(current, topic),
+      sameSubject: topic.subject === current.subject,
+    }))
+    .sort((a, b) => b.score - a.score);
+  const preferred = ranked.filter((item) => item.sameSubject);
+  const fallback = ranked.filter((item) => !item.sameSubject);
+  return [...preferred, ...fallback].slice(0, 5).map((item) => item.id);
+}
 
 function getFocusSignal(daysUntilExam?: number): string {
   if (typeof daysUntilExam !== "number") {
@@ -145,6 +199,12 @@ export default function Schedule() {
     durationMinutes: number;
     sessionType: "lecture" | "practice";
   } | null>(null);
+  const [swapOpen, setSwapOpen] = useState(false);
+  const [swapPending, setSwapPending] = useState(false);
+  const [swapBlockIndex, setSwapBlockIndex] = useState<number | null>(null);
+  const [swapTopicId, setSwapTopicId] = useState<number | null>(null);
+  const [showFullSwapList, setShowFullSwapList] = useState(false);
+  const [needsExtraSwapConfirm, setNeedsExtraSwapConfirm] = useState(false);
 
   const [activeTimer, setActiveTimer] = useState<ActiveTimer | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -233,6 +293,59 @@ export default function Schedule() {
     });
   }
 
+  function openSwapDialog(blockIndex: number) {
+    const block = scheduleBlocks[blockIndex];
+    if (!block) return;
+    setSwapBlockIndex(blockIndex);
+    setSwapTopicId(null);
+    setShowFullSwapList(false);
+    setNeedsExtraSwapConfirm(false);
+    setSwapOpen(true);
+  }
+
+  async function applySwap() {
+    if (swapBlockIndex === null || swapTopicId === null || swapPending) return;
+    const used = overrideBudget.used ?? 0;
+    const softLimit = overrideBudget.softLimit ?? SWAP_SOFT_LIMIT;
+    if (used >= softLimit && !needsExtraSwapConfirm) {
+      setNeedsExtraSwapConfirm(true);
+      return;
+    }
+
+    setSwapPending(true);
+    try {
+      const response = await fetch("/api/schedule/today/swap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ blockIndex: swapBlockIndex, chosenTopicId: swapTopicId }),
+      });
+      if (!response.ok) {
+        throw new Error("Swap failed");
+      }
+      const updated = (await response.json()) as SwapApiResponse;
+      queryClient.setQueryData(getGetTodayScheduleQueryKey(), (previous: unknown) => ({
+        ...(typeof previous === "object" && previous ? previous : {}),
+        ...(updated ?? {}),
+      }));
+      invalidateAfterRecalculate(queryClient);
+      setSwapOpen(false);
+      setSwapBlockIndex(null);
+      setSwapTopicId(null);
+      setNeedsExtraSwapConfirm(false);
+      const isRecommended = updated.swap?.wasRecommended ?? selectedSwapIsRecommended;
+      toast({
+        title: "Session swapped",
+        description: isRecommended
+          ? "Schedule updated with a recommended alternative."
+          : "Schedule updated. This swap is lower priority and may affect progress.",
+      });
+    } catch {
+      toast({ title: "Error", description: "Could not swap this block right now.", variant: "destructive" });
+    } finally {
+      setSwapPending(false);
+    }
+  }
+
   function onSubmit(data: z.infer<typeof logSessionSchema>) {
     const topic = topicMap.get(data.topicId);
     const topicName = selectedBlock?.topicName ?? topic?.name ?? "topic";
@@ -289,6 +402,45 @@ export default function Schedule() {
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
   const todayIso = new Date().toISOString().split("T")[0];
   const scheduleBlocks = Array.isArray(schedule?.blocks) ? schedule.blocks : [];
+  const overrideBudget = ((schedule as { overrideBudget?: ScheduleOverrideBudget } | undefined)?.overrideBudget) ?? {
+    used: 0,
+    softLimit: SWAP_SOFT_LIMIT,
+  };
+  const swapTargetBlock = swapBlockIndex !== null ? scheduleBlocks[swapBlockIndex] : null;
+  const allSwapTopics = useMemo(() => (topics ?? []).map((topic) => ({
+    id: topic.id,
+    name: topic.name,
+    subject: topic.subject,
+    difficultyLevel: topic.difficultyLevel,
+    priorityScore: topic.priorityScore,
+  })), [topics]);
+  const recommendedSwapIds = useMemo(() => {
+    if (!swapTargetBlock) return [];
+    return buildRecommendedSwapIds(
+      {
+        id: swapTargetBlock.topicId,
+        name: swapTargetBlock.topicName,
+        subject: swapTargetBlock.subject,
+        difficultyLevel: topicMap.get(swapTargetBlock.topicId)?.difficultyLevel ?? 3,
+        priorityScore: swapTargetBlock.priorityScore ?? 0,
+      },
+      allSwapTopics.filter((topic) => topic.id !== swapTargetBlock.topicId),
+    );
+  }, [swapTargetBlock, allSwapTopics, topicMap]);
+  const recommendedSwapTopics = useMemo(() => {
+    const map = new Map(allSwapTopics.map((topic) => [topic.id, topic]));
+    return recommendedSwapIds
+      .map((id) => map.get(id))
+      .filter((topic): topic is SwapOption => Boolean(topic));
+  }, [recommendedSwapIds, allSwapTopics]);
+  const fullSwapTopics = useMemo(() => {
+    if (!swapTargetBlock) return [];
+    return allSwapTopics
+      .filter((topic) => topic.id !== swapTargetBlock.topicId)
+      .sort((a, b) => (b.priorityScore ?? 0) - (a.priorityScore ?? 0));
+  }, [allSwapTopics, swapTargetBlock]);
+  const selectedSwapIsRecommended = swapTopicId !== null && recommendedSwapIds.includes(swapTopicId);
+  const showPriorityWarning = swapTopicId !== null && !selectedSwapIsRecommended;
   const scheduleHours = typeof schedule?.scheduledHours === "number" ? schedule.scheduledHours : 0;
   const focusSignal = getFocusSignal(typeof schedule?.daysUntilExam === "number" ? schedule.daysUntilExam : undefined);
   const hasSchedule = Boolean(schedule);
@@ -365,6 +517,9 @@ export default function Schedule() {
           <h1 className="text-2xl font-bold tracking-tight">Today's Schedule</h1>
           <p className="text-muted-foreground">{today}</p>
           <p className="text-xs text-muted-foreground mt-1">{focusSignal}</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Flex swaps today: {overrideBudget.used}/{overrideBudget.softLimit}
+          </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => openLog()} data-testid="button-log-session">
@@ -532,6 +687,15 @@ export default function Schedule() {
                               >
                                 Quick timer
                               </Button>
+                              <Button
+                                variant="ghost"
+                                className="min-h-[40px] px-3 text-xs"
+                                onClick={() => openSwapDialog(currentIndex)}
+                                disabled={activeTimer !== null}
+                              >
+                                <Shuffle className="h-3.5 w-3.5 mr-1" />
+                                Not feeling this
+                              </Button>
                             </>
                           )}
                         </div>
@@ -554,6 +718,10 @@ export default function Schedule() {
                       <Button variant="ghost" className="text-xs" onClick={() => navigate(`/execute/${currentIndex + 1}`)}>
                         Preview
                       </Button>
+                      <Button variant="ghost" className="text-xs" onClick={() => openSwapDialog(currentIndex + 1)}>
+                        <Shuffle className="h-3.5 w-3.5 mr-1" />
+                        Not feeling this
+                      </Button>
                     </CardContent>
                   </Card>
                 )}
@@ -569,7 +737,13 @@ export default function Schedule() {
                         return (
                           <div key={`remaining-${index}`} className="rounded-md border px-3 py-2 text-sm flex items-center justify-between">
                             <span className="truncate pr-3">{block.topicName}</span>
-                            <span className="text-xs text-muted-foreground shrink-0">{block.durationMinutes}m · {block.sessionType}</span>
+                            <div className="shrink-0 flex items-center gap-2">
+                              <span className="text-xs text-muted-foreground">{block.durationMinutes}m · {block.sessionType}</span>
+                              <Button variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => openSwapDialog(index)}>
+                                <Shuffle className="h-3 w-3 mr-1" />
+                                Swap
+                              </Button>
+                            </div>
                           </div>
                         );
                       })}
@@ -602,6 +776,108 @@ export default function Schedule() {
           </CardContent>
         </Card>
       )}
+
+      <Dialog
+        open={swapOpen}
+        onOpenChange={(open) => {
+          setSwapOpen(open);
+          if (!open) {
+            setSwapBlockIndex(null);
+            setSwapTopicId(null);
+            setNeedsExtraSwapConfirm(false);
+            setShowFullSwapList(false);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Not feeling this?</DialogTitle>
+            <DialogDescription>
+              Pick a recommended swap first. You can also browse the full topic list.
+            </DialogDescription>
+          </DialogHeader>
+          {swapTargetBlock ? (
+            <div className="space-y-4">
+              <div className="rounded-md border px-3 py-2 text-sm bg-muted/30">
+                <p className="font-medium">{swapTargetBlock.topicName}</p>
+                <p className="text-xs text-muted-foreground">{swapTargetBlock.durationMinutes}m · {swapTargetBlock.sessionType}</p>
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Recommended alternatives</p>
+                <div className="space-y-2 max-h-40 overflow-auto">
+                  {recommendedSwapTopics.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No direct recommendation found.</p>
+                  ) : (
+                    recommendedSwapTopics.map((option) => (
+                      <button
+                        type="button"
+                        key={`swap-reco-${option.id}`}
+                        onClick={() => setSwapTopicId(option.id)}
+                        className={`w-full rounded-md border px-3 py-2 text-left text-sm transition ${
+                          swapTopicId === option.id
+                            ? "border-primary bg-primary/10"
+                            : "hover:border-primary/50"
+                        }`}
+                      >
+                        <span className="font-medium">{option.name}</span>
+                        <span className="block text-xs text-muted-foreground">{option.subject}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Button variant="ghost" className="px-0 h-auto text-sm" onClick={() => setShowFullSwapList((v) => !v)}>
+                  {showFullSwapList ? "Hide full topic list" : "Browse full topic list"}
+                </Button>
+                {showFullSwapList && (
+                  <Select value={swapTopicId ? String(swapTopicId) : ""} onValueChange={(value) => setSwapTopicId(Number(value))}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Choose any topic" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {fullSwapTopics.map((option) => (
+                        <SelectItem key={`swap-all-${option.id}`} value={String(option.id)}>
+                          {option.name} — {option.subject}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+              {showPriorityWarning && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-xs flex items-start gap-2">
+                  <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                  <span>This is lower priority and may affect your progress.</span>
+                </div>
+              )}
+              {overrideBudget.used >= overrideBudget.softLimit && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
+                  You are beyond today’s swap budget. This will require confirmation.
+                </div>
+              )}
+              {needsExtraSwapConfirm && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
+                  Confirm this extra swap to continue.
+                </div>
+              )}
+              <Button
+                className="w-full"
+                disabled={swapTopicId === null || swapPending}
+                onClick={() => void applySwap()}
+              >
+                {swapPending
+                  ? "Applying swap..."
+                  : needsExtraSwapConfirm
+                    ? "Confirm and swap"
+                    : "Swap topic"}
+              </Button>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Select a block to swap.</p>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={logOpen} onOpenChange={setLogOpen}>
         <DialogContent>
